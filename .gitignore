@@ -1,0 +1,15 @@
+node_modules/
+models/
+temp_models/
+texturas/
+public/models/
+*.glb
+*.gltf
+*.fbx
+*.obj
+*.mtl
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.svg
