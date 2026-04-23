@@ -402,6 +402,18 @@ function acceptFriendRequest(id, uid) {
 function checkPendingInvitations() {}
 function listenToMatchStats() {}
 
+// Ocultar el modal de modo de juego inmediatamente si venimos de una invitación PvP,
+// sin esperar a que resuelva el auth (dominios distintos pueden tardar)
+(function() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('matchId') || params.get('roomId')) {
+        const gameModal = document.getElementById('game-modal');
+        if (gameModal) gameModal.classList.add('hidden');
+        const statusEl = document.getElementById('status');
+        if (statusEl) statusEl.innerText = '⚔ Conectando a la arena...';
+    }
+})();
+
 window.handleEmailLogin = handleEmailLogin;
 window.handleGoogleLogin = handleGoogleLogin;
 window.toggleLoginMode = toggleLoginMode;

@@ -323,16 +323,16 @@
             transform: scale(1.02);
         }
 
-        .ai-options {
+        #ai-options {
             display: none;
             margin-top: 20px;
         }
 
-        .ai-options.show {
+        #ai-options.show {
             display: block;
         }
 
-        .ai-options label {
+        #ai-options label {
             color: rgba(255, 255, 255, 0.8);
             font-size: 14px;
             display: block;
@@ -1110,6 +1110,69 @@
         zoom</div>
     <div id="capture-log"></div>
 
+    <!-- Game Mode Modal -->
+    <div id="game-modal">
+        <div class="modal-box">
+            <h2 style="font-family:'Cinzel',serif;color:#f0c040;margin-bottom:16px;">⚔ Modo de Juego</h2>
+            <button class="promo-btn" onclick="startGame('pvp')" style="width:100%;margin-bottom:10px;">🎮 Jugador vs Jugador (Local)</button>
+            <button class="promo-btn" onclick="showAIOptions()" style="width:100%;margin-bottom:10px;">🤖 Jugador vs IA</button>
+            <div id="ai-options">
+                <p style="color:rgba(255,255,255,0.7);font-size:13px;margin-bottom:8px;">Nivel de dificultad:</p>
+                <input type="range" id="level-slider" min="1" max="10" value="5" oninput="updateLevel(this.value)" style="width:100%;">
+                <p style="color:#f0c040;font-family:'Cinzel',serif;font-size:14px;margin-top:6px;">Nivel: <span id="level-display">5</span> — <span id="level-label">⚔ Intermedio</span></p>
+                <button class="promo-btn" onclick="startGame('ai')" style="width:100%;margin-top:10px;">⚔ ¡Comenzar!</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Social Toggle Button -->
+    <div id="social-toggle" style="display:none;" onclick="toggleSocialPanel()">
+        <span class="toggle-icon">⚔</span>
+        <span class="toggle-label">SOCIAL</span>
+        <span class="online-count" id="online-count">0</span>
+        <span class="notif-badge" id="req-badge" style="display:none;">0</span>
+    </div>
+
+    <!-- Social Panel -->
+    <div id="social-panel">
+        <div id="social-user-info"></div>
+        <div class="social-tabs">
+            <button id="tab-friends" class="social-tab active" onclick="switchTab('friends')">⚔ Amigos</button>
+            <button id="tab-requests" class="social-tab" onclick="switchTab('requests')">📩 Solicitudes</button>
+        </div>
+        <div class="add-friend-section">
+            <div class="add-friend-row">
+                <input type="email" id="add-friend-email" class="add-friend-input" placeholder="Email del guerrero...">
+                <button class="add-friend-btn" onclick="sendFriendRequest()">➕</button>
+            </div>
+        </div>
+        <div id="social-content" class="social-content"></div>
+    </div>
+
+    <!-- Login Modal -->
+    <div id="login-modal" class="hidden">
+        <div class="modal-box" style="max-width:380px;">
+            <h2 style="font-family:'Cinzel',serif;color:#f0c040;margin-bottom:8px;">⚔ Arena Online</h2>
+            <p id="login-subtitle" style="color:rgba(255,255,255,0.6);font-size:13px;margin-bottom:16px;">Inicia sesión para jugar online</p>
+            <input type="text" id="login-name" placeholder="Nombre de guerrero" style="display:none;width:100%;padding:10px;margin-bottom:8px;background:rgba(255,255,255,0.05);border:1px solid rgba(240,192,64,0.15);border-radius:8px;color:#fff;font-size:13px;">
+            <input type="email" id="login-email" placeholder="Email" style="width:100%;padding:10px;margin-bottom:8px;background:rgba(255,255,255,0.05);border:1px solid rgba(240,192,64,0.15);border-radius:8px;color:#fff;font-size:13px;">
+            <input type="password" id="login-password" placeholder="Contraseña" style="width:100%;padding:10px;margin-bottom:12px;background:rgba(255,255,255,0.05);border:1px solid rgba(240,192,64,0.15);border-radius:8px;color:#fff;font-size:13px;">
+            <p id="login-error" style="color:#ff5555;font-size:12px;min-height:18px;"></p>
+            <button id="login-btn" class="promo-btn" onclick="handleEmailLogin()" style="width:100%;margin-bottom:10px;">⚔ ENTRAR</button>
+            <button class="promo-btn" onclick="handleGoogleLogin()" style="width:100%;background:linear-gradient(135deg,#4285f4,#357ae8);margin-bottom:12px;">Google</button>
+            <p id="login-toggle-text" style="color:rgba(255,255,255,0.5);font-size:12px;cursor:pointer;text-align:center;" onclick="toggleLoginMode()">¿No tienes cuenta? <span style="color:#f0c040;">Regístrate</span></p>
+        </div>
+    </div>
+
+    <!-- Game Invite Popup -->
+    <div id="invite-popup">
+        <div class="invite-title">⚔ ¡Desafío!</div>
+        <div class="invite-msg" id="invite-msg"></div>
+        <div class="invite-actions">
+            <button class="invite-accept" onclick="acceptInvite()">⚔ Aceptar</button>
+            <button class="invite-decline" onclick="declineInvite()">✕ Rechazar</button>
+        </div>
+    </div>
 
 
     <script
@@ -1122,7 +1185,16 @@
         import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
         import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
         import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
         import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
+        import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+
+        // ─── LOADERS ──────────────────────────────
+        const dracoLoader = new DRACOLoader();
+        dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
+        const gltfLoader = new GLTFLoader();
+        gltfLoader.setDRACOLoader(dracoLoader);
+        const colladaLoader = new ColladaLoader();
 
         // ─── GLOBALS ──────────────────────────────
         let scene, camera, renderer, composer, controls, raycaster, mouse, clock;
@@ -1191,26 +1263,27 @@
             addEventListener('resize', onResize);
             addEventListener('mousedown', onClick);
 
-            // If we came from Mundo with a Coliseum ID, play against the AI to unlock the skin
+            // If we came from Mundo with a Coliseum ID, play against AI automatically
             if (urlColiseumId) {
                 gameMode = 'ai';
+                // Hide the game mode modal — skip straight to battle
+                document.getElementById('game-modal').classList.add('hidden');
                 
-                // Configurar dificultad según el coliseo (del 1 al 5)
-                const coliseumNormalized = urlColiseumId.toLowerCase();
-                if (coliseumNormalized === 'estadio verde' || coliseumNormalized === 'bosque') {
-                    aiLevel = 1; // Nivel más fácil para niños/principiantes
-                } else if (coliseumNormalized === 'hielo') {
-                    aiLevel = 2;
-                } else if (coliseumNormalized === 'desierto') {
-                    aiLevel = 3;
-                } else if (coliseumNormalized === 'volcan') {
-                    aiLevel = 4;
-                } else if (coliseumNormalized === 'cementerio') {
-                    aiLevel = 5;
+                // Normalize: replace hyphens with spaces for matching
+                const coliseumNormalized = urlColiseumId.toLowerCase().replace(/-/g, ' ');
+                if (coliseumNormalized.includes('verde') || coliseumNormalized.includes('bosque') || coliseumNormalized.includes('aethelgard')) {
+                    aiLevel = 2; // Nivel Fácil, depth = 1
+                } else if (coliseumNormalized.includes('hielo') || coliseumNormalized.includes('frost') || coliseumNormalized.includes('velo')) {
+                    aiLevel = 4; // Nivel Medio, depth = 2
+                } else if (coliseumNormalized.includes('vacio') || coliseumNormalized.includes('fractura') || coliseumNormalized.includes('abismo') || coliseumNormalized.includes('cementerio')) {
+                    aiLevel = 7; // Nivel Difícil, depth = 3
+                } else if (coliseumNormalized.includes('volcan') || coliseumNormalized.includes('cumbres') || coliseumNormalized.includes('ceniza') || coliseumNormalized.includes('dragon')) {
+                    aiLevel = 10; // Nivel Experto, depth = 4
                 } else {
-                    aiLevel = 5; // Default fallback
+                    aiLevel = 2; // Default: fácil (depth 1)
                 }
             } else {
+                // No coliseumId — show the modal so user picks mode
                 gameMode = 'pvp';
             }
             document.getElementById('reset-btn').style.display = 'inline-block';
@@ -1324,9 +1397,9 @@
         plasterTextureDark.repeat.set(8, 8);
 
         // Combat effect textures (bang & pow)
-        const bangTexture = textureLoader.load('./texturas/bang2.png');
+        const bangTexture = textureLoader.load('./texturas/bang.png');
         bangTexture.colorSpace = THREE.SRGBColorSpace;
-        const powTexture = textureLoader.load('./texturas/pow2.png');
+        const powTexture = textureLoader.load('./texturas/pow.png');
         powTexture.colorSpace = THREE.SRGBColorSpace;
         let combatImages = [];  // Array to track active combat image sprites
 
@@ -1635,8 +1708,6 @@
 
         // ─── BANNERS ─────────────────────────────
         function loadBanners() {
-            const gltfLoader = new GLTFLoader();
-
             // Alliance Banner - behind white pieces (left side in the image)
             gltfLoader.load('./models/alliance_banner.glb', (gltf) => {
                 const banner = gltf.scene;
@@ -1891,8 +1962,7 @@
             }
         }
 
-        const gltfLoader = new GLTFLoader();
-        const colladaLoader = new ColladaLoader();
+        // (Global loaders moved to the top of the script)
 
         // ─── GLB SKIN LOADER ─────────────────────────
         // Maps skin IDs to per-piece-type 3D model files
@@ -1905,62 +1975,128 @@
                 queen:  './models/nuevos/orcos/reinaorco.glb',
                 king:   './models/reyorco.glb',
             },
+            'humanos': {
+                pawn:   './models/nuevos/humanos/peon.glb',
+                rook:   './models/nuevos/humanos/torre.glb',
+                knight: './models/nuevos/humanos/caballo.glb',
+                bishop: './models/nuevos/humanos/alfil.glb',
+                queen:  './models/nuevos/humanos/raina.glb',
+                king:   './models/reyhumano.glb',
+            },
+            'nomuertos': {
+                pawn:   './models/nuevos/nomuertos/peon.glb',
+                rook:   './models/nuevos/nomuertos/torreplaga.glb',
+                knight: './models/nuevos/nomuertos/caballo.glb',
+                bishop: './models/nuevos/nomuertos/alfil.glb',
+                queen:  './models/nuevos/nomuertos/reina.glb',
+                king:   './models/nuevos/nomuertos/reyplaga.glb',
+            },
+            'vacio': {
+                pawn:   './models/nuevos/vacio/peon.glb',
+                rook:   './models/nuevos/vacio/torre.glb',
+                knight: './models/nuevos/vacio/caballo.glb',
+                bishop: './models/nuevos/vacio/alfil.glb',
+                queen:  './models/nuevos/vacio/reina.glb',
+                king:   './models/nuevos/vacio/reivacio.glb',
+            },
+            'dragones': {
+                pawn:   './models/nuevos/humanos/peon.glb', /* Pending custom peon */
+                rook:   './models/nuevos/humanos/torre.glb', /* Pending custom torre */
+                knight: './models/nuevos/dragones/caballo.glb',
+                bishop: './models/nuevos/dragones/alfil.glb',
+                queen:  './models/nuevos/dragones/reina.glb',
+                king:   './models/nuevos/dragones/reydragon.glb',
+            },
             'verde':     { king: './models/reyhumano.glb' },
             'blanca':    { king: './models/reynomuerto.glb' },
             'alanegra':  { king: './models/alanegra.glb' },
             'Dimensius': { king: './models/Dimensius.glb' },
         };
 
-        // Maps coliseum ID to which GLB the black (enemy) army uses
-        const ENEMY_SKIN_MAP = {
-            'bosque':      'orcos',     // placeholder (enemy for green zone)
-            'verde':       'orcos',     // placeholder
-            'hielo':       'orcos',     // placeholder
-            'desierto':    'orcos',     // placeholder
-            'volcan':      'alanegra',  // <- NEW: alanegra for volcanic enemy
-            'cementerio':  'Dimensius', // <- NEW: Dimensius for shadow enemy
+        // Maps special skins to their base army (used for pieces without specific models)
+        // e.g. 'verde' skin only defines a king, so pawn/rook/etc use 'humanos' models
+        const SKIN_BASE_ARMY = {
+            'verde':     'humanos',
+            'blanca':    'humanos',
+            'alanegra':  'humanos',
+            'Dimensius': 'humanos',
+            // Full armies don't need a base — they already have all pieces
         };
 
+        // Maps coliseum ID to which GLB the black (enemy) army uses
+        // Keys include both hyphenated and spaced versions for robust matching
+        const ENEMY_SKIN_MAP = {
+            'bosque':         'humanos',
+            'verde':          'humanos',
+            'estadio verde':  'humanos',
+            'estadio-verde':  'humanos',
+            'hielo':          'nomuertos',
+            'frost':          'nomuertos',
+            'desierto':       'orcos',
+            'desert':         'orcos',
+            'volcan':         'dragones',
+            'volcano':        'dragones',
+            'cementerio':     'vacio',
+            'shadow':         'vacio',
+        };
+
+        const glbCache = {}; // Cache to store loaded GLTF objects to avoid redundant parsing
+
         function loadGLBPiece(p, modelPath, color, onDone) {
+            if (glbCache[modelPath]) {
+                const loadedMesh = instantiateGLB(glbCache[modelPath], p, color);
+                onDone(loadedMesh);
+                return;
+            }
+
             gltfLoader.load(modelPath, (gltf) => {
-                const mesh = gltf.scene;
-
-                const box = new THREE.Box3().setFromObject(mesh);
-                const size = new THREE.Vector3();
-                box.getSize(size);
-
-                const targetH = (p.type === 'king' || p.type === 'queen') ? 3.5 : 2.5;
-                const scale = (size.y > 0) ? (targetH / size.y) : 1;
-
-                mesh.scale.set(scale, scale, scale);
-                mesh.updateMatrixWorld(true);
-
-                const scaledBox = new THREE.Box3().setFromObject(mesh);
-                mesh.position.y = -scaledBox.min.y;
-
-                const wrapperGrp = new THREE.Group();
-                wrapperGrp.add(mesh);
-
-                // Rotate models to face forward on the board
-                if (color === 'white') {
-                    wrapperGrp.rotation.y = Math.PI; // White faces toward black side
-                } else {
-                    wrapperGrp.rotation.y = 0; // Black faces toward white side
-                }
-
-                wrapperGrp.traverse(c => {
-                    if (c.isMesh) { c.castShadow = false; c.receiveShadow = false; }
-                });
-
-                const finalWrap = new THREE.Group();
-                finalWrap.add(wrapperGrp);
-
-                onDone(finalWrap);
-
+                glbCache[modelPath] = gltf; // Cache the full object for future pieces of this type
+                const loadedMesh = instantiateGLB(gltf, p, color);
+                onDone(loadedMesh);
             }, undefined, (err) => {
                 console.warn(`⚠️ Could not load skin model ${modelPath}:`, err);
                 onDone(null); // signal failure, caller decides fallback
             });
+        }
+
+        function instantiateGLB(gltf, p, color) {
+            // Use SkeletonUtils to clone the mesh and its skeleton completely
+            const mesh = SkeletonUtils.clone(gltf.scene);
+
+            const box = new THREE.Box3().setFromObject(mesh);
+            const size = new THREE.Vector3();
+            box.getSize(size);
+
+            const targetH = (p.type === 'king' || p.type === 'queen') ? 3.5 : 2.5;
+            const scale = (size.y > 0) ? (targetH / size.y) : 1;
+
+            mesh.scale.set(scale, scale, scale);
+            mesh.updateMatrixWorld(true);
+
+            const scaledBox = new THREE.Box3().setFromObject(mesh);
+            mesh.position.y = -scaledBox.min.y;
+
+            // Fix rotation offset because models are exported sideways
+            mesh.rotation.y = -Math.PI / 2;
+
+            const wrapperGrp = new THREE.Group();
+            wrapperGrp.add(mesh); // Add the scaled and centered piece
+
+            // Rotate models to face their opponent across the board
+            if (color === 'white') {
+                wrapperGrp.rotation.y = 0; // White (bottom) faces toward black (top)
+            } else {
+                wrapperGrp.rotation.y = Math.PI; // Black (top) faces toward white (bottom)
+            }
+
+            wrapperGrp.traverse(c => {
+                if (c.isMesh) { c.castShadow = false; c.receiveShadow = false; }
+            });
+
+            const finalWrap = new THREE.Group();
+            finalWrap.add(wrapperGrp);
+
+            return finalWrap;
         }
 
         function addPiece(type, color, x, z) {
@@ -1968,17 +2104,27 @@
 
             // Determine which skin to use
             let skinId;
+
             if (color === 'white') {
                 skinId = urlArmySkin || 'orcos';
             } else {
-                // Enemy skin based on coliseum
-                const enemySkin = ENEMY_SKIN_MAP[urlColiseumId];
-                skinId = enemySkin || 'orcos';
+                // Enemy skin based on coliseum — try both raw and normalized IDs
+                const rawId = (urlColiseumId || '').toLowerCase();
+                const normalizedId = rawId.replace(/-/g, ' ');
+                const enemySkin = ENEMY_SKIN_MAP[rawId] || ENEMY_SKIN_MAP[normalizedId];
+                skinId = enemySkin || 'humanos'; // Default enemy = humanos
             }
 
             // Check if this skin has a GLB model for this piece type
             const skinModels = SKIN_GLB_MAP[skinId];
-            const modelPath = skinModels ? skinModels[type] : null;
+            let modelPath = skinModels ? skinModels[type] : null;
+
+            // If no model for this piece type, try the base army (e.g. 'verde' → 'humanos')
+            if (!modelPath && SKIN_BASE_ARMY[skinId]) {
+                const baseArmy = SKIN_BASE_ARMY[skinId];
+                const baseModels = SKIN_GLB_MAP[baseArmy];
+                modelPath = baseModels ? baseModels[type] : null;
+            }
 
             if (modelPath) {
                 // Load GLB model
@@ -2259,10 +2405,7 @@
                 aiThinking = true;
                 animating = true;
                 document.getElementById('status').innerText = '🤖 La IA está pensando...';
-                setTimeout(() => {
-                    makeAIMove();
-                    aiThinking = false;
-                }, 600);
+                makeAIMove(); // This is now async using Web Worker
             }
         }
 
@@ -2415,55 +2558,51 @@
             return bestEval;
         }
 
+        let aiWorker = null;
+
         function makeAIMove() {
-            const aiPieces = pieces.filter(p => p.color === 'black');
-            let bestMove = null;
-            let bestPiece = null;
-            let bestEval = -Infinity;
             const depth = getAIDepth();
+            console.log(`🤖 AI starts thinking with depth ${depth} (Level: ${aiLevel})`);
 
-            for (const p of aiPieces) {
-                const moves = getLegalMoves(p);
-                for (const move of moves) {
-                    // Save state
-                    const origX = p.x, origZ = p.z, origType = p.type;
-                    const captured = pieceAt(move.x, move.z);
+            // Serialize pieces to send to Worker
+            const cleanPieces = pieces.map(p => ({
+                type: p.type,
+                color: p.color,
+                x: p.x,
+                z: p.z
+            }));
 
-                    // Apply move
-                    p.x = move.x;
-                    p.z = move.z;
-                    if (captured) {
-                        const idx = pieces.indexOf(captured);
-                        if (idx !== -1) pieces.splice(idx, 1);
+            // Initialize worker if it doesn't exist
+            if (!aiWorker) {
+                aiWorker = new Worker('aiWorker.js');
+                aiWorker.onmessage = function(e) {
+                    const { bestMove, bestPiece, bestEval } = e.data;
+                    
+                    aiThinking = false; // Reset thinking flag
+
+                    if (bestPiece && bestMove) {
+                        // Find the corresponding piece in the main thread's pieces array
+                        const realPiece = pieces.find(p => p.color === 'black' && p.x === bestPiece.x && p.z === bestPiece.z);
+                        if (realPiece) {
+                            console.log(`🤖 AI moves ${realPiece.type} to (${bestMove.x}, ${bestMove.z}) (Eval: ${bestEval})`);
+                            doMove(realPiece, bestMove.x, bestMove.z);
+                        } else {
+                            console.error('🤖 AI chose an invalid piece.');
+                            animating = false;
+                        }
+                    } else {
+                        console.log('🤖 AI could not find a valid move.');
+                        animating = false;  // No valid moves
                     }
-
-                    // Simulate pawn promotion for evaluation
-                    if (p.type === 'pawn' && p.z === 0) {
-                        p.type = 'queen';
-                    }
-
-                    const evalScore = minimax(depth - 1, -Infinity, Infinity, false);
-
-                    // Undo move
-                    p.x = origX;
-                    p.z = origZ;
-                    p.type = origType;
-                    if (captured) pieces.push(captured);
-
-                    if (evalScore > bestEval) {
-                        bestEval = evalScore;
-                        bestMove = move;
-                        bestPiece = p;
-                    }
-                }
+                };
             }
 
-            if (bestPiece && bestMove) {
-                console.log(`🤖 AI moves ${bestPiece.type} to (${bestMove.x}, ${bestMove.z})`);
-                doMove(bestPiece, bestMove.x, bestMove.z);
-            } else {
-                animating = false;  // No valid moves
-            }
+            // Post message to worker
+            aiWorker.postMessage({
+                pieces: cleanPieces,
+                depth: depth,
+                aiLevel: aiLevel
+            });
         }
 
         // ─── COMBAT IMAGE SPRITES (BANG / POW) ────
@@ -2678,25 +2817,44 @@
             scene.remove(p.mesh);
             p.type = newType;
             
-            let skinId = 'orcos';
-            if (p.color === 'white') skinId = urlArmySkin;
-            else if (urlColiseumId) {
-                const map = { 'bosque':'pokemon','verde':'pokemon','volcan':'pitufos' };
-                skinId = map[urlColiseumId] || 'orcos';
+            // Determine skinId using same logic as addPiece
+            let skinId;
+
+            if (p.color === 'white') {
+                skinId = urlArmySkin || 'orcos';
+            } else {
+                const enemySkin = ENEMY_SKIN_MAP[urlColiseumId];
+                skinId = enemySkin || 'orcos';
             }
 
-            const mesh = createPlaceholderPiece(newType, p.color);
+            const skinModels = SKIN_GLB_MAP[skinId];
+            const modelPath = skinModels ? skinModels[newType] : null;
 
-            if (skinId === 'pokemon') {
+            if (modelPath) {
+                loadGLBPiece(p, modelPath, p.color, (loadedMesh) => {
+                    if (loadedMesh) {
+                        p.modelScale = 1;
+                        setPos(p, false, loadedMesh);
+                        p.mesh = loadedMesh;
+                        loadedMesh.userData = { type: 'piece', pieceData: p };
+                        scene.add(loadedMesh);
+                    } else {
+                        fallbackPlaceholder(p, newType, skinId);
+                    }
+                });
+            } else {
+                fallbackPlaceholder(p, newType, skinId);
+            }
+        }
+
+        function fallbackPlaceholder(p, newType, skinId) {
+            const mesh = createPlaceholderPiece(newType, p.color);
+            // Apply simple tints if needed (legacy or fallback)
+            if (skinId === 'pokemon' || skinId === 'verde') {
                 mesh.traverse(c => {
                     if(c.isMesh&&c.material) { c.material=c.material.clone(); c.material.color.setHex(p.color==='white'?0xffcc00:0xccaa00); }
                 });
-            } else if (skinId === 'pitufos') {
-                mesh.traverse(c => {
-                    if(c.isMesh&&c.material) { c.material=c.material.clone(); c.material.color.setHex(p.color==='white'?0x00ccff:0x0088cc); }
-                });
             }
-
             setPos(p, false, mesh);
             p.mesh = mesh;
             mesh.userData = { type: 'piece', pieceData: p };
@@ -2709,7 +2867,10 @@
             const rY = params.get('returnY');
             const rZ = params.get('returnZ');
             
-            let url = 'http://localhost:5173';
+            const hostname = window.location.hostname;
+            const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
+            let url = isLocal ? 'http://localhost:3003' : 'https://chess-coliseum-pro.web.app';
+            
             const qs = [];
             if (rX !== null && rY !== null && rZ !== null) {
                 qs.push(`x=${rX}&y=${rY}&z=${rZ}`);
@@ -2788,8 +2949,30 @@
         window.resetGameToMenu = resetGameToMenu;
         window.returnToWorld = returnToWorld;
 
+        // ─── BRIDGE: selectArmy for multiplayer.js ───
+        // Called by multiplayer.js when armySkin arrives via URL after Firebase auth
+        window.selectArmy = function(skinName) {
+            console.log(`🎨 selectArmy called with: ${skinName}`);
+            urlArmySkin = skinName;
+            // If pieces are already on the board, reload them with the new skin
+            if (pieces.length > 0) {
+                pieces.forEach(p => scene.remove(p.mesh));
+                pieces = [];
+                setupPieces();
+            }
+        };
+
         init();
     </script>
+
+    <!-- Firebase SDK (compat for multiplayer.js) -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+    <!-- Socket.io Client -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <!-- Multiplayer & Social System -->
+    <script src="multiplayer.js"></script>
 </body>
 
 </html>
