@@ -1110,6 +1110,16 @@
         zoom</div>
     <div id="capture-log"></div>
 
+    <!-- Ocultar modal inmediatamente si venimos de una invitación PvP (matchId en URL) -->
+    <script>
+        (function() {
+            var p = new URLSearchParams(window.location.search);
+            if (p.get('matchId') || p.get('roomId')) {
+                document.write('<style>#game-modal{display:none!important}</style>');
+            }
+        })();
+    </script>
+
     <!-- Game Mode Modal -->
     <div id="game-modal">
         <div class="modal-box">
@@ -2972,7 +2982,7 @@
     <!-- Socket.io Client -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <!-- Multiplayer & Social System -->
-    <script src="multiplayer.js"></script>
+    <script src="multiplayer.js?v=3"></script>
 </body>
 
 </html>
