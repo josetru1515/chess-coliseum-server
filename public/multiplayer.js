@@ -3,13 +3,13 @@
 
 // ─── Firebase Config ─────────────────────────────────────────
 const firebaseConfig = {
-    apiKey: "AIzaSyDIoozFa_dI7O_ehrS6Rmn2MTrimgmUhgI",
-    authDomain: "growing-now.firebaseapp.com",
-    projectId: "growing-now",
-    storageBucket: "growing-now.firebasestorage.app",
-    messagingSenderId: "1089538196243",
-    appId: "1:1089538196243:web:c7f92eb4708c11f8f990e6",
-    measurementId: "G-68QNF7VF1G"
+    apiKey: "AIzaSyBL6Z3WqpUwLyYA3onViT2_Yq8Xw-otP2g",
+    authDomain: "chess-coliseum-pro.firebaseapp.com",
+    projectId: "chess-coliseum-pro",
+    storageBucket: "chess-coliseum-pro.firebasestorage.app",
+    messagingSenderId: "849612909046",
+    appId: "1:849612909046:web:e5235e85ef6fdf3d8f3fd7",
+    measurementId: "G-CN1TX91RVD"
 };
 
 // Initialize Firebase
@@ -20,7 +20,7 @@ const db = firebase.firestore();
 // ─── Socket.io Connection ────────────────────────────────────
 // Automáticamente detecta si estás en local o en el servidor desplegado
 const SERVER_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? 'http://localhost:3000'
+    ? 'http://localhost:3001'
     : 'https://chess-coliseum-motor.onrender.com'; // Servidor multijugador en la nube (Render)
 
 const socket = io(SERVER_URL);
@@ -176,12 +176,53 @@ auth.onAuthStateChanged(user => {
         checkPendingInvitations();
 
         console.log(`✅ Logged in as: ${currentUser.displayName}`);
+
+        // Check URL params for PvP room redirect from Mundo
+        checkUrlParams();
     } else {
         currentUser = null;
         document.getElementById('login-modal').classList.remove('hidden');
         document.getElementById('social-toggle').style.display = 'none';
         document.getElementById('social-panel').classList.remove('open');
     }
+});
+
+// ─── URL Parameters Handling ─────────────────────────────────
+function checkUrlParams() {
+    const params = new URLSearchParams(window.location.search);
+    const roomId = params.get('roomId');
+    const matchId = params.get('matchId');
+    const armySkin = params.get('armySkin');
+    const color = params.get('color');
+
+    if (armySkin && typeof window.selectArmy === 'function') {
+        console.log(`🎨 Applying skin from URL: ${armySkin}`);
+        window.selectArmy(armySkin);
+    }
+
+    const targetRoomId = matchId || roomId;
+
+    if (targetRoomId && currentUser) {
+        console.log(`🔗 Joining room: ${targetRoomId} as ${color || 'auto'}`);
+        multiplayerRoomId = targetRoomId;
+        if (color) multiplayerColor = color;
+
+        const gameModal = document.getElementById('game-modal');
+        if (gameModal) gameModal.classList.add('hidden');
+
+        socket.emit('joinExistingRoom', {
+            roomId: targetRoomId,
+            uid: currentUser.uid,
+            displayName: currentUser.displayName,
+            color: color || null
+        });
+    }
+}
+
+socket.on('waitingForOpponent', (data) => {
+    const statusEl = document.getElementById('status');
+    if (statusEl) statusEl.innerText = '⏳ Esperando al oponente...';
+    console.log(`⏳ Waiting for opponent in room: ${data.roomId}`);
 });
 
 // ─── UI: Update User Info ────────────────────────────────────
@@ -303,14 +344,14 @@ function sendEmailInvitation(toEmail) {
 
             emailInput.value = '';
             if (data.emailSent === false) {
-                alert(`📨 ¡Invitación guardada!\n\nEl guerrero con email ${toEmail} aún no tiene cuenta.\nCuando se registre, recibirá tu solicitud de amistad automáticamente.\n\n💡 Comparte este link para que se una:\nhttps://growing-now.web.app/`);
+                alert(`📨 ¡Invitación guardada!\n\nEl guerrero con email ${toEmail} aún no tiene cuenta.\nCuando se registre, recibirá tu solicitud de amistad automáticamente.\n\n💡 Comparte este link para que se una:\nhttps://chess-coliseum-pro.web.app/`);
             } else {
                 alert(`📧 ¡Email de invitación enviado a ${toEmail}!\n\nSe le ha enviado un correo con un link para unirse a Chess Coliseum.`);
             }
         })
         .catch(err => {
             console.error('Error sending email invitation:', err);
-            alert(`📨 Invitación guardada para ${toEmail}.\n\nComparte este link para que se una:\nhttps://growing-now.web.app/`);
+            alert(`📨 Invitación guardada para ${toEmail}.\n\nComparte este link para que se una:\nhttps://chess-coliseum-pro.web.app/`);
         });
 }
 
@@ -709,7 +750,7 @@ function resignGame() {
 function shareViaWhatsApp() {
     if (!currentUser) return;
 
-    const url = 'https://growing-now.web.app/';
+    const url = 'https://chess-coliseum-pro.web.app/';
     const message = `⚔ ¡${currentUser.displayName} te desafía a una batalla épica en Chess Coliseum!\n\nÚnete a la Arena aquí: ${url}\n\nMi correo es: ${currentUser.email}`;
 
     // Create the whatsapp API URL

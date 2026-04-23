@@ -42,8 +42,8 @@ app.post('/api/send-invite-email', async (req, res) => {
         return res.status(400).json({ error: 'Faltan datos' });
     }
 
-    // La URL de invitación debe apuntar al Frontend en Firebase
-    const serverUrl = 'https://growing-now.web.app';
+    // La URL de invitación apunta al Mundo (chess-coliseum-pro)
+    const serverUrl = 'https://chess-coliseum-pro.web.app';
 
     const mailOptions = {
         from: `"⚔ Chess Coliseum" <${process.env.EMAIL_USER || 'maplechepe@gmail.com'}>`,
@@ -179,34 +179,63 @@ io.on('connection', (socket) => {
 
     // ── Join Existing Game Room (After Redirect) ─────────
     socket.on('joinExistingRoom', (data) => {
-        const { roomId, uid } = data;
-        const room = gameRooms.get(roomId);
+        const { roomId, uid, displayName, color } = data;
+        let room = gameRooms.get(roomId);
 
-        if (room) {
-            socket.join(roomId);
-            
-            // Update the user's socket reference just in case
-            userSockets.set(uid, socket.id);
-            const user = connectedUsers.get(socket.id);
+        socket.join(roomId);
+        userSockets.set(uid, socket.id);
 
-            // Re-emit gameStart to this specific socket so the frontend initializes the board
+        if (room && room.state === 'playing') {
+            // Reconnect to an active game
             socket.emit('gameStart', {
                 roomId,
                 white: room.white,
                 black: room.black,
-                whiteName: 'Jugador 1', // We can get this from db or memory if needed
-                blackName: 'Jugador 2'
+                whiteName: room.whiteName || 'Jugador 1',
+                blackName: room.blackName || 'Jugador 2'
             });
-
-            // If there's an ongoing state, we should ideally send it, but for a new game it's just the fresh board
-            socket.emit('gameStateSync', {
-                turn: room.turn,
-                moves: room.moves
-            });
-
+            socket.emit('gameStateSync', { turn: room.turn, moves: room.moves });
             console.log(`🔌 Player ${uid} rejoined room ${roomId}`);
-        } else {
-            socket.emit('inviteError', { message: 'La partida ya no está disponible.' });
+            return;
+        }
+
+        if (!room) {
+            // First player arriving from Firestore redirect — create waiting room
+            room = {
+                white: color === 'white' ? uid : null,
+                black: color === 'black' ? uid : null,
+                whiteName: color === 'white' ? displayName : null,
+                blackName: color === 'black' ? displayName : null,
+                moves: [],
+                state: 'waiting',
+                turn: 'white',
+                createdAt: Date.now()
+            };
+            gameRooms.set(roomId, room);
+            socket.emit('waitingForOpponent', { roomId });
+            console.log(`⏳ Room ${roomId} created. Waiting for opponent...`);
+            return;
+        }
+
+        // Room exists in 'waiting' state — second player arriving
+        if (color === 'white' && !room.white) {
+            room.white = uid;
+            room.whiteName = displayName;
+        } else if (color === 'black' && !room.black) {
+            room.black = uid;
+            room.blackName = displayName;
+        }
+
+        if (room.white && room.black) {
+            room.state = 'playing';
+            io.to(roomId).emit('gameStart', {
+                roomId,
+                white: room.white,
+                black: room.black,
+                whiteName: room.whiteName || 'Jugador 1',
+                blackName: room.blackName || 'Jugador 2'
+            });
+            console.log(`🎮 Game started: Room ${roomId} (${room.whiteName} vs ${room.blackName})`);
         }
     });
 
@@ -292,7 +321,7 @@ function broadcastOnlineUsers() {
 }
 
 // ─── Start Server ────────────────────────────────────────────
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
     console.log('');
     console.log('═══════════════════════════════════════════');

@@ -1,15 +1,15 @@
 // ─── Chess Coliseum Pro - Multiplayer & Social System ─────────
 // Firebase Auth + Firestore for friends, Socket.io for real-time games
 
-// ─── Firebase Config ─────────────────────────────────────────
+// ─── Firebase Config (Chess Coliseum Pro — proyecto independiente) ────
 const firebaseConfig = {
-    apiKey: "AIzaSyDIoozFa_dI7O_ehrS6Rmn2MTrimgmUhgI",
-    authDomain: "growing-now.firebaseapp.com",
-    projectId: "growing-now",
-    storageBucket: "growing-now.firebasestorage.app",
-    messagingSenderId: "1089538196243",
-    appId: "1:1089538196243:web:c7f92eb4708c11f8f990e6",
-    measurementId: "G-68QNF7VF1G"
+    apiKey: "AIzaSyBL6Z3WqpUwLyYA3onViT2_Yq8Xw-otP2g",
+    authDomain: "chess-coliseum-pro.firebaseapp.com",
+    projectId: "chess-coliseum-pro",
+    storageBucket: "chess-coliseum-pro.firebasestorage.app",
+    messagingSenderId: "849612909046",
+    appId: "1:849612909046:web:e5235e85ef6fdf3d8f3fd7",
+    measurementId: "G-CN1TX91RVD"
 };
 
 // Initialize Firebase
@@ -21,7 +21,7 @@ const db = firebase.firestore();
 
 // ─── Socket.io Connection ────────────────────────────────────
 const SERVER_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    ? 'http://localhost:3000'
+    ? 'http://localhost:3001'
     : 'https://chess-coliseum-motor.onrender.com';
 
 const socket = io(SERVER_URL);
@@ -148,9 +148,8 @@ auth.onAuthStateChanged(user => {
         console.log(`✅ Logged in as: ${currentUser.displayName}`);
     } else {
         currentUser = null;
-        const loginModal = document.getElementById('login-modal');
-        if (loginModal) loginModal.classList.remove('hidden');
-        
+        // Don't force login modal - let user play offline (PvP/AI) without auth
+        // Login modal only shown when user explicitly clicks social toggle
         const socialToggle = document.getElementById('social-toggle');
         if (socialToggle) socialToggle.style.display = 'none';
         
@@ -195,23 +194,39 @@ function switchTab(tab) {
 function checkUrlParams() {
     const params = new URLSearchParams(window.location.search);
     const roomId = params.get('roomId');
+    const matchId = params.get('matchId');
     const armySkin = params.get('armySkin');
+    const color = params.get('color');
 
     if (armySkin && typeof window.selectArmy === 'function') {
         console.log(`🎨 Applying skin from URL: ${armySkin}`);
         window.selectArmy(armySkin);
     }
 
-    if (roomId && currentUser) {
-        console.log(`🔗 Detected roomId in URL: ${roomId}. Joining...`);
-        multiplayerRoomId = roomId;
+    const targetRoomId = matchId || roomId;
+
+    if (targetRoomId && currentUser) {
+        console.log(`🔗 Joining room: ${targetRoomId} as ${color || 'auto'}`);
+        multiplayerRoomId = targetRoomId;
+        if (color) multiplayerColor = color;
+
+        const gameModal = document.getElementById('game-modal');
+        if (gameModal) gameModal.classList.add('hidden');
+
         socket.emit('joinExistingRoom', {
-            roomId: roomId,
+            roomId: targetRoomId,
             uid: currentUser.uid,
-            displayName: currentUser.displayName
+            displayName: currentUser.displayName,
+            color: color || null
         });
     }
 }
+
+socket.on('waitingForOpponent', (data) => {
+    const statusEl = document.getElementById('status');
+    if (statusEl) statusEl.innerText = '⏳ Esperando al oponente...';
+    console.log(`⏳ Waiting for opponent in room: ${data.roomId}`);
+});
 
 socket.on('roomJoined', (data) => {
     multiplayerRoomId = data.roomId;
