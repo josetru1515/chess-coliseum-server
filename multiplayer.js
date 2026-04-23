@@ -193,34 +193,39 @@ function switchTab(tab) {
 // ─── URL Parameters Handling ─────────────────────────────────
 function checkUrlParams() {
     const params = new URLSearchParams(window.location.search);
-    const roomId = params.get('roomId');
-    const matchId = params.get('matchId');
+    const matchId = params.get('matchId') || params.get('roomId');
     const armySkin = params.get('armySkin');
     const color = params.get('color');
 
     if (armySkin && typeof window.selectArmy === 'function') {
-        console.log(`🎨 Applying skin from URL: ${armySkin}`);
         window.selectArmy(armySkin);
     }
 
-    const targetRoomId = matchId || roomId;
+    if (!matchId) return;
 
-    if (targetRoomId && currentUser) {
-        console.log(`🔗 Joining room: ${targetRoomId} as ${color || 'auto'}`);
-        multiplayerRoomId = targetRoomId;
-        if (color) multiplayerColor = color;
+    multiplayerRoomId = matchId;
+    if (color) multiplayerColor = color;
 
-        const gameModal = document.getElementById('game-modal');
-        if (gameModal) gameModal.classList.add('hidden');
+    const gameModal = document.getElementById('game-modal');
+    if (gameModal) gameModal.classList.add('hidden');
 
-        socket.emit('joinExistingRoom', {
-            roomId: targetRoomId,
-            uid: currentUser.uid,
-            displayName: currentUser.displayName,
-            color: color || null
-        });
-    }
+    // Funciona con o sin sesión iniciada — el color en la URL es suficiente para identificar al jugador
+    const uid = currentUser ? currentUser.uid : ('pvp_' + color);
+    const displayName = currentUser ? currentUser.displayName : (color === 'white' ? 'Blancas' : 'Negras');
+
+    console.log(`🔗 Joining room: ${matchId} as ${color} (uid: ${uid})`);
+    socket.emit('joinExistingRoom', {
+        roomId: matchId,
+        uid: uid,
+        displayName: displayName,
+        color: color || null
+    });
 }
+
+// Ejecutar checkUrlParams en cuanto el socket conecta, sin esperar auth
+socket.on('connect', () => {
+    checkUrlParams();
+});
 
 socket.on('waitingForOpponent', (data) => {
     const statusEl = document.getElementById('status');
@@ -230,9 +235,11 @@ socket.on('waitingForOpponent', (data) => {
 
 socket.on('roomJoined', (data) => {
     multiplayerRoomId = data.roomId;
-    multiplayerColor = (currentUser.uid === data.white) ? 'white' : 'black';
+    if (!multiplayerColor) {
+        multiplayerColor = (currentUser && currentUser.uid === data.white) ? 'white' : 'black';
+    }
     const opponentName = (multiplayerColor === 'white') ? (data.blackName || 'Oponente') : (data.whiteName || 'Oponente');
-    
+
     const statusEl = document.getElementById('status');
     if (statusEl) statusEl.innerText = `⚔ Online vs ${opponentName}`;
 
@@ -371,10 +378,15 @@ socket.on('gameInviteReceived', data => {
 
 socket.on('gameStart', data => {
     multiplayerRoomId = data.roomId;
-    multiplayerColor = (currentUser.uid === data.white) ? 'white' : 'black';
-    document.getElementById('social-panel').classList.remove('open');
+    // Usar el color pre-asignado desde la URL; solo calcular si no viene ya definido
+    if (!multiplayerColor) {
+        multiplayerColor = (currentUser && currentUser.uid === data.white) ? 'white' : 'black';
+    }
+    const socialPanel = document.getElementById('social-panel');
+    if (socialPanel) socialPanel.classList.remove('open');
     if (typeof window.startMultiplayerGame === 'function') {
-        window.startMultiplayerGame(multiplayerColor, multiplayerRoomId, (multiplayerColor === 'white' ? data.blackName : data.whiteName));
+        const opponentName = (multiplayerColor === 'white' ? data.blackName : data.whiteName) || 'Oponente';
+        window.startMultiplayerGame(multiplayerColor, multiplayerRoomId, opponentName);
     }
 });
 
