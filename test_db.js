@@ -2,9 +2,9 @@ const { initializeApp } = require('firebase/app');
 const { getFirestore, collection, getDocs } = require('firebase/firestore');
 
 const firebaseConfig = {
-    apiKey: "AIzaSyDIoozFa_dI7O_ehrS6Rmn2MTrimgmUhgI",
-    authDomain: "growing-now.firebaseapp.com",
-    projectId: "growing-now"
+    apiKey: "AIzaSyBL6Z3WqpUwLyYA3onViT2_Yq8Xw-otP2g",
+    authDomain: "chess-coliseum-pro.firebaseapp.com",
+    projectId: "chess-coliseum-pro"
 };
 
 const app = initializeApp(firebaseConfig);

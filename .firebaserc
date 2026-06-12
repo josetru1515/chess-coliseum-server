@@ -1,10 +1,12 @@
 {
-  "projects": {},
+  "projects": {
+    "default": "chess-coliseum-pro"
+  },
   "targets": {
-    "growing-now": {
+    "chess-coliseum-pro": {
       "hosting": {
-        "chess": [
-          "growing-now-chess"
+        "arena": [
+          "chess-coliseum-arena"
         ]
       }
     }

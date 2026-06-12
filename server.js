@@ -9,6 +9,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
 const nodemailer = require('nodemailer');
+const ChessEngine = require('./engine.js'); // Motor único: el servidor VALIDA, no confía
 
 const app = express();
 const server = http.createServer(app);
@@ -95,6 +96,7 @@ app.post('/api/send-invite-email', async (req, res) => {
 const connectedUsers = new Map(); // socketId -> { uid, displayName, email }
 const userSockets = new Map();    // uid -> socketId
 const gameRooms = new Map();      // roomId -> { white: uid, black: uid, moves: [], state }
+const socketRooms = new Map();    // socketId -> roomId (reverse lookup for disconnect)
 
 // ─── Socket.io Logic ─────────────────────────────────────────
 io.on('connection', (socket) => {
@@ -143,13 +145,14 @@ io.on('connection', (socket) => {
     socket.on('acceptGameInvite', (data) => {
         const { roomId, whiteUid, blackUid } = data;
 
-        // Create game room
+        // Create game room — con motor propio: el servidor es la autoridad
         const room = {
             white: whiteUid,
             black: blackUid,
             moves: [],
             state: 'playing',
-            turn: 'white',
+            game: new ChessEngine(),
+            sockets: { white: null, black: null }, // socket.id autorizado por color
             createdAt: Date.now()
         };
         gameRooms.set(roomId, room);
@@ -160,9 +163,13 @@ io.on('connection', (socket) => {
 
         if (whiteSocket) {
             io.sockets.sockets.get(whiteSocket)?.join(roomId);
+            room.sockets.white = whiteSocket;
+            socketRooms.set(whiteSocket, roomId);
         }
         if (blackSocket) {
             io.sockets.sockets.get(blackSocket)?.join(roomId);
+            room.sockets.black = blackSocket;
+            socketRooms.set(blackSocket, roomId);
         }
 
         // Notify both players the game is starting
@@ -184,23 +191,10 @@ io.on('connection', (socket) => {
 
         socket.join(roomId);
         userSockets.set(uid, socket.id);
-
-        if (room && room.state === 'playing') {
-            // Reconnect to an active game
-            socket.emit('gameStart', {
-                roomId,
-                white: room.white,
-                black: room.black,
-                whiteName: room.whiteName || 'Jugador 1',
-                blackName: room.blackName || 'Jugador 2'
-            });
-            socket.emit('gameStateSync', { turn: room.turn, moves: room.moves });
-            console.log(`🔌 Player ${uid} rejoined room ${roomId}`);
-            return;
-        }
+        socketRooms.set(socket.id, roomId);
 
         if (!room) {
-            // First player arriving from Firestore redirect — create waiting room
+            // First player arriving — create waiting room
             room = {
                 white: color === 'white' ? uid : null,
                 black: color === 'black' ? uid : null,
@@ -208,7 +202,11 @@ io.on('connection', (socket) => {
                 blackName: color === 'black' ? displayName : null,
                 moves: [],
                 state: 'waiting',
-                turn: 'white',
+                game: new ChessEngine(),
+                sockets: {
+                    white: color === 'white' ? socket.id : null,
+                    black: color === 'black' ? socket.id : null
+                },
                 createdAt: Date.now()
             };
             gameRooms.set(roomId, room);
@@ -217,13 +215,36 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // Room exists in 'waiting' state — second player arriving
-        if (color === 'white' && !room.white) {
+        if (!room.sockets) room.sockets = { white: null, black: null };
+
+        if (room.state === 'playing') {
+            // Reconnect to active game — re-autorizar este socket y resincronizar
+            if (color === 'white' || color === 'black') room.sockets[color] = socket.id;
+            socket.emit('gameStart', {
+                roomId,
+                white: room.white,
+                black: room.black,
+                whiteName: room.whiteName || 'Jugador 1',
+                blackName: room.blackName || 'Jugador 2'
+            });
+            socket.emit('gameStateSync', {
+                turn: room.game.turn,
+                moves: room.moves,
+                fen: room.game.fen()
+            });
+            console.log(`🔌 Player ${uid} rejoined room ${roomId}`);
+            return;
+        }
+
+        // Room in 'waiting' — always update the slot so real uid overwrites pvp_ placeholder
+        if (color === 'white') {
             room.white = uid;
             room.whiteName = displayName;
-        } else if (color === 'black' && !room.black) {
+            room.sockets.white = socket.id;
+        } else if (color === 'black') {
             room.black = uid;
             room.blackName = displayName;
+            room.sockets.black = socket.id;
         }
 
         if (room.white && room.black) {
@@ -236,6 +257,8 @@ io.on('connection', (socket) => {
                 blackName: room.blackName || 'Jugador 2'
             });
             console.log(`🎮 Game started: Room ${roomId} (${room.whiteName} vs ${room.blackName})`);
+        } else {
+            socket.emit('waitingForOpponent', { roomId });
         }
     });
 
@@ -251,36 +274,78 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ── Chess Move ────────────────────────────────────────
+    // ── Chess Move (VALIDADO: el servidor es la autoridad) ──
     socket.on('chessMove', (data) => {
         const { roomId, move } = data;
         const room = gameRooms.get(roomId);
 
-        if (room) {
-            room.moves.push(move);
-            room.turn = room.turn === 'white' ? 'black' : 'white';
+        if (!room || room.state !== 'playing' || !room.game || !move) {
+            socket.emit('moveRejected', { reason: 'no_active_game' });
+            return;
+        }
 
-            // Broadcast the move to the opponent
-            socket.to(roomId).emit('opponentMove', { move });
-            console.log(`♟ Move in ${roomId}: ${move.type} ${move.fromX},${move.fromZ} → ${move.toX},${move.toZ}`);
+        // 1. ¿Quién envía? Solo los dos sockets autorizados de la sala
+        let senderColor = null;
+        if (room.sockets) {
+            if (room.sockets.white === socket.id) senderColor = 'white';
+            else if (room.sockets.black === socket.id) senderColor = 'black';
+        }
+        if (!senderColor) {
+            socket.emit('moveRejected', { reason: 'not_a_player' });
+            console.log(`🚫 Socket ${socket.id} intentó mover sin ser jugador de ${roomId}`);
+            return;
+        }
+
+        // 2. ¿Es su turno?
+        if (room.game.turn !== senderColor) {
+            socket.emit('moveRejected', { reason: 'not_your_turn' });
+            return;
+        }
+
+        // 3. ¿Es legal? (pieza, origen, destino, promoción, jaque… todo lo decide el motor)
+        const rec = room.game.makeMove({
+            fromX: move.fromX, fromZ: move.fromZ,
+            toX: move.toX, toZ: move.toZ,
+            promotion: move.promotion || null
+        });
+        if (!rec) {
+            socket.emit('moveRejected', { reason: 'illegal_move', fen: room.game.fen() });
+            console.log(`🚫 Movimiento ilegal de ${senderColor} en ${roomId}:`, move);
+            return;
+        }
+
+        // Aceptado: registrar y reenviar al rival (incluida la promoción elegida)
+        const validated = {
+            type: rec.type,
+            color: rec.color,
+            fromX: rec.fromX, fromZ: rec.fromZ,
+            toX: rec.toX, toZ: rec.toZ,
+            promotion: rec.promotion,
+            lan: rec.lan
+        };
+        room.moves.push(validated);
+        socket.to(roomId).emit('opponentMove', { move: validated });
+        console.log(`♟ ${roomId}: ${rec.lan} (${senderColor})`);
+
+        // 4. ¿Terminó la partida? El SERVIDOR lo decide y lo anuncia
+        const status = rec.status;
+        if (status && status.over) {
+            room.state = 'finished';
+            io.to(roomId).emit('gameEnded', { result: status.state, winner: status.winner });
+            console.log(`🏁 ${roomId}: ${status.state} — ganador: ${status.winner}`);
+            setTimeout(() => gameRooms.delete(roomId), 60000);
         }
     });
 
-    // ── Game Over ─────────────────────────────────────────
-    socket.on('gameOver', (data) => {
-        const { roomId, result, winner } = data;
-        const room = gameRooms.get(roomId);
-
-        if (room) {
-            room.state = 'finished';
-            io.to(roomId).emit('gameEnded', { result, winner });
-            console.log(`🏁 Game ended in ${roomId}: ${result}`);
-
-            // Clean up room after a delay
-            setTimeout(() => {
-                gameRooms.delete(roomId);
-            }, 60000);
-        }
+    // ── Sync Request (reconexión o estado divergente) ─────
+    socket.on('requestSync', (data) => {
+        const room = gameRooms.get(data && data.roomId);
+        if (!room || !room.game) return;
+        socket.emit('gameStateSync', {
+            turn: room.game.turn,
+            moves: room.moves,
+            fen: room.game.fen()
+        });
     });
 
     // ── Resign ────────────────────────────────────────────
@@ -288,15 +353,36 @@ io.on('connection', (socket) => {
         const { roomId, uid } = data;
         const room = gameRooms.get(roomId);
 
-        if (room) {
+        if (room && room.state === 'playing') {
+            // Identificar al que se rinde por su socket (no por el uid que diga)
+            let resignColor = null;
+            if (room.sockets) {
+                if (room.sockets.white === socket.id) resignColor = 'white';
+                else if (room.sockets.black === socket.id) resignColor = 'black';
+            }
+            if (!resignColor) resignColor = room.white === uid ? 'white' : 'black';
+
             room.state = 'finished';
-            const winner = room.white === uid ? 'black' : 'white';
+            const winner = resignColor === 'white' ? 'black' : 'white';
             io.to(roomId).emit('gameEnded', {
                 result: 'resignation',
                 winner
             });
-            console.log(`🏳️ Player ${uid} resigned in ${roomId}`);
+            console.log(`🏳️ ${resignColor} se rindió en ${roomId}`);
         }
+    });
+
+    // ── Voluntary exit (player clicked "return to world") ────
+    socket.on('player_left', (data) => {
+        const { roomId } = data;
+        const room = gameRooms.get(roomId);
+        if (room && room.state === 'playing') {
+            room.state = 'finished';
+            socket.to(roomId).emit('opponent_disconnected', { roomId });
+            console.log(`🚪 Player left room ${roomId}`);
+            setTimeout(() => gameRooms.delete(roomId), 10000);
+        }
+        socketRooms.delete(socket.id);
     });
 
     // ── Disconnect ────────────────────────────────────────
@@ -307,6 +393,19 @@ io.on('connection', (socket) => {
             userSockets.delete(user.uid);
             connectedUsers.delete(socket.id);
             broadcastOnlineUsers();
+        }
+
+        // Notify opponent if this socket was in an active game room
+        const roomId = socketRooms.get(socket.id);
+        if (roomId) {
+            const room = gameRooms.get(roomId);
+            if (room && room.state === 'playing') {
+                room.state = 'finished';
+                socket.to(roomId).emit('opponent_disconnected', { roomId });
+                console.log(`⚡ Player disconnected from room ${roomId} — opponent notified`);
+                setTimeout(() => gameRooms.delete(roomId), 10000);
+            }
+            socketRooms.delete(socket.id);
         }
     });
 });

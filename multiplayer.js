@@ -66,8 +66,10 @@ function handleEmailLogin() {
             .then(() => db.collection('users').doc(auth.currentUser.uid).set({
                 displayName: auth.currentUser.displayName,
                 email: auth.currentUser.email,
+                emailLower: (auth.currentUser.email || '').toLowerCase(), // búsqueda de amigos (igual que mundo)
                 photoURL: auth.currentUser.photoURL || '',
                 friends: [],
+                unlockedSkins: ['orcos'], // mismo esquema que mundo-frontend
                 createdAt: firebase.firestore.FieldValue.serverTimestamp()
             }))
             .catch(err => {
@@ -85,8 +87,10 @@ function handleGoogleLogin() {
                 return db.collection('users').doc(user.uid).set({
                     displayName: user.displayName || 'Guerrero',
                     email: user.email,
+                    emailLower: (user.email || '').toLowerCase(), // búsqueda de amigos (igual que mundo)
                     photoURL: user.photoURL || '',
                     friends: [],
+                    unlockedSkins: ['orcos'], // mismo esquema que mundo-frontend
                     createdAt: firebase.firestore.FieldValue.serverTimestamp()
                 });
             }
@@ -257,36 +261,76 @@ function sendFriendRequest() {
     if (!emailInput) return;
     const friendEmail = emailInput.value.trim().toLowerCase();
     if (!friendEmail || !currentUser) return;
-    if (friendEmail === currentUser.email.toLowerCase()) {
+    if (friendEmail === (currentUser.email || '').toLowerCase()) {
         alert('No puedes agregarte a ti mismo 😅');
         return;
     }
-    db.collection('users').where('email', '==', friendEmail).get().then(snapshot => {
-        if (snapshot.empty) {
-            sendEmailInvitation(friendEmail);
-            return;
-        }
-        const targetUser = snapshot.docs[0];
-        const targetUid = targetUser.id;
-        if (friendsList.some(f => f.uid === targetUid)) {
-            alert('¡Ya son amigos! ⚔');
-            return;
-        }
-        db.collection('friendRequests').add({
-            fromUid: currentUser.uid,
-            fromName: currentUser.displayName,
-            fromEmail: currentUser.email,
-            fromPhoto: currentUser.photoURL,
-            toUid: targetUid,
-            toName: targetUser.data().displayName,
-            toEmail: targetUser.data().email,
-            status: 'pending',
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        }).then(() => {
-            emailInput.value = '';
-            alert('¡Solicitud de amistad enviada! ⚔');
+    // Buscar por emailLower (normalizado); fallback a email exacto para
+    // cuentas antiguas que aún no tienen el campo (mismo esquema que mundo)
+    db.collection('users').where('emailLower', '==', friendEmail).get()
+        .then(snapshot => {
+            if (!snapshot.empty) return snapshot;
+            return db.collection('users').where('email', '==', friendEmail).get();
+        })
+        .then(snapshot => {
+            if (snapshot.empty) {
+                sendEmailInvitation(friendEmail);
+                return;
+            }
+            const targetUser = snapshot.docs[0];
+            const targetUid = targetUser.id;
+            if (friendsList.some(f => f.uid === targetUid)) {
+                alert('¡Ya son amigos! ⚔');
+                return;
+            }
+            return db.collection('friendRequests').add({
+                fromUid: currentUser.uid,
+                fromName: currentUser.displayName,
+                fromEmail: currentUser.email,
+                fromPhoto: currentUser.photoURL,
+                toUid: targetUid,
+                toName: targetUser.data().displayName,
+                toEmail: targetUser.data().email,
+                status: 'pending',
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            }).then(() => {
+                emailInput.value = '';
+                alert('¡Solicitud de amistad enviada! ⚔');
+            });
+        })
+        .catch(err => {
+            console.error('Error enviando solicitud de amistad:', err);
+            alert('Error enviando la solicitud: ' + (err.code || err.message));
         });
-    });
+}
+
+// Invitación a alguien que aún no tiene cuenta: guarda la invitación en
+// Firestore y pide al servidor que envíe el email (si el SMTP está configurado).
+// Antes esta función NO EXISTÍA y agregar un email no registrado rompía con
+// ReferenceError.
+function sendEmailInvitation(toEmail) {
+    db.collection('pendingInvitations').add({
+        fromUid: currentUser.uid,
+        fromName: currentUser.displayName || 'Guerrero',
+        fromEmail: currentUser.email,
+        toEmail: toEmail,
+        status: 'pending',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    }).catch(err => console.error('Error guardando invitación pendiente:', err));
+
+    fetch(`${SERVER_URL}/api/send-invite-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            toEmail: toEmail,
+            fromName: currentUser.displayName || 'Guerrero',
+            fromEmail: currentUser.email
+        })
+    }).catch(() => { /* el email es cortesía; la invitación ya quedó guardada */ });
+
+    const emailInput = document.getElementById('add-friend-email');
+    if (emailInput) emailInput.value = '';
+    alert(`📨 Ese guerrero aún no tiene cuenta.\n\nInvitación guardada para ${toEmail} — se le notificará al registrarse.`);
 }
 
 // (Simplified versions of other functions for brevity but maintaining core logic)
@@ -301,7 +345,7 @@ function listenToFriendRequests() {
             badge.textContent = friendRequests.length;
         }
         if (currentTab === 'requests') renderFriendRequests();
-    });
+    }, err => console.error('Error escuchando solicitudes de amistad:', err));
 }
 
 function listenToFriends() {
@@ -314,8 +358,8 @@ function listenToFriends() {
             friendsList = [];
             snapshot.forEach(d => friendsList.push({ uid: d.id, ...d.data() }));
             renderFriendsList();
-        });
-    });
+        }).catch(err => console.error('Error cargando amigos:', err));
+    }, err => console.error('Error escuchando lista de amigos:', err));
 }
 
 function renderFriendsList() {
@@ -376,6 +420,29 @@ socket.on('gameInviteReceived', data => {
     }
 });
 
+function acceptInvite() {
+    if (!pendingInvite) return;
+    const popup = document.getElementById('invite-popup');
+    if (popup) popup.classList.remove('show');
+    socket.emit('acceptGameInvite', {
+        roomId: pendingInvite.roomId,
+        whiteUid: pendingInvite.fromUid,
+        blackUid: currentUser ? currentUser.uid : ('pvp_black_' + Date.now())
+    });
+    pendingInvite = null;
+}
+
+function declineInvite() {
+    if (!pendingInvite) return;
+    const popup = document.getElementById('invite-popup');
+    if (popup) popup.classList.remove('show');
+    socket.emit('declineGameInvite', {
+        fromUid: pendingInvite.fromUid,
+        declinedByName: currentUser ? currentUser.displayName : 'Oponente'
+    });
+    pendingInvite = null;
+}
+
 socket.on('gameStart', data => {
     multiplayerRoomId = data.roomId;
     // Usar el color pre-asignado desde la URL; solo calcular si no viene ya definido
@@ -392,9 +459,60 @@ socket.on('gameStart', data => {
 
 socket.on('opponentMove', data => { if (typeof window.receiveOpponentMove === 'function') window.receiveOpponentMove(data.move); });
 
+// ── Resincronización con el servidor ─────────────────────────
+// El servidor manda el historial validado; el cliente reconstruye.
+socket.on('gameStateSync', data => {
+    if (typeof window.applyServerSync === 'function') window.applyServerSync(data);
+});
+
+// El servidor rechazó nuestro movimiento (estado divergente o trampa):
+// pedir el estado oficial y reconstruir.
+socket.on('moveRejected', data => {
+    console.warn('⚠️ Movimiento rechazado por el servidor:', data.reason);
+    if (multiplayerRoomId) socket.emit('requestSync', { roomId: multiplayerRoomId });
+});
+
+window.requestServerSync = function () {
+    if (multiplayerRoomId) socket.emit('requestSync', { roomId: multiplayerRoomId });
+};
+
+const RESULT_NAMES = {
+    checkmate: 'jaque mate',
+    stalemate: 'rey ahogado',
+    fifty_moves: 'regla de 50 movimientos',
+    threefold: 'triple repetición',
+    insufficient_material: 'material insuficiente',
+    resignation: 'rendición'
+};
+
 socket.on('gameEnded', data => {
-    alert(`Partida terminada: ${data.winner === 'white' ? 'Blancas' : 'Negras'} ganan!`);
+    const reason = RESULT_NAMES[data.result] || data.result;
+    if (data.winner === 'draw') {
+        alert(`🤝 Tablas: ${reason}.`);
+    } else {
+        alert(`🏆 ¡${data.winner === 'white' ? 'Blancas' : 'Negras'} ganan! (${reason})`);
+    }
     multiplayerRoomId = null;
+});
+
+socket.on('opponent_disconnected', () => {
+    multiplayerRoomId = null;
+    alert('⚔ Tu oponente abandonó la batalla.\n\nRegresando al mundo...');
+    if (typeof window.returnToWorld === 'function') {
+        window.returnToWorld();
+    }
+});
+
+// Notify server when the player leaves voluntarily or closes the tab
+window.notifyPlayerLeft = function () {
+    if (multiplayerRoomId) {
+        socket.emit('player_left', { roomId: multiplayerRoomId });
+        multiplayerRoomId = null;
+    }
+};
+
+window.addEventListener('beforeunload', () => {
+    window.notifyPlayerLeft();
 });
 
 function sendMoveToServer(move) { if (multiplayerRoomId) socket.emit('chessMove', { roomId: multiplayerRoomId, move }); }
@@ -437,3 +555,5 @@ window.acceptFriendRequest = acceptFriendRequest;
 window.sendGameInvite = sendGameInvite;
 window.sendMoveToServer = sendMoveToServer;
 window.resignGame = resignGame;
+window.acceptInvite = acceptInvite;
+window.declineInvite = declineInvite;

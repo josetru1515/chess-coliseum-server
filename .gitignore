@@ -13,3 +13,8 @@ public/models/
 *.jpeg
 *.webp
 *.svg
+
+# Secretos y cachés locales — NUNCA al repo
+.env
+.firebase/
+output.txt

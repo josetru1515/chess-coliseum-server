@@ -1,0 +1,196 @@
+{
+  "manifestVersion": "1.0",
+  "description": "Manifiesto canónico de modelos 3D y assets para Chess Coliseum Pro. Las referencias de este archivo dictan las rutas y estructura base de instanciación para mallas y jerarquías.",
+  "factions": {
+    "orcos": {
+      "pieces": {
+        "pawn": {
+          "path": "./models/nuevos/orcos/peonesorcos.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "rook": {
+          "path": "./models/nuevos/orcos/torreorco.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "knight": {
+          "path": "./models/nuevos/orcos/caballoorco.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "bishop": {
+          "path": "./models/nuevos/orcos/alfilorco.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "queen": {
+          "path": "./models/nuevos/orcos/reinaorco.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "king": {
+          "path": "./models/reyorco.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        }
+      }
+    },
+    "humanos": {
+      "pieces": {
+        "pawn": {
+          "path": "./models/nuevos/humanos/peon.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "rook": {
+          "path": "./models/nuevos/humanos/torre.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "knight": {
+          "path": "./models/nuevos/humanos/caballo.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "bishop": {
+          "path": "./models/nuevos/humanos/alfil.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "queen": {
+          "path": "./models/nuevos/humanos/raina.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "king": {
+          "path": "./models/reyhumano.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        }
+      }
+    },
+    "nomuertos": {
+      "pieces": {
+        "pawn": {
+          "path": "./models/nuevos/nomuertos/peon.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "rook": {
+          "path": "./models/nuevos/nomuertos/torreplaga.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "knight": {
+          "path": "./models/nuevos/nomuertos/caballo.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "bishop": {
+          "path": "./models/nuevos/nomuertos/alfil.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "queen": {
+          "path": "./models/nuevos/nomuertos/reina.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "king": {
+          "path": "./models/nuevos/nomuertos/reyplaga.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        }
+      }
+    },
+    "vacio": {
+      "pieces": {
+        "pawn": {
+          "path": "./models/nuevos/vacio/peon.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "rook": {
+          "path": "./models/nuevos/vacio/torre.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "knight": {
+          "path": "./models/nuevos/vacio/caballo.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "bishop": {
+          "path": "./models/nuevos/vacio/alfil.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "queen": {
+          "path": "./models/nuevos/vacio/reina.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "king": {
+          "path": "./models/nuevos/vacio/reivacio.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        }
+      }
+    },
+    "dragones": {
+      "pieces": {
+        "pawn": {
+          "path": "",
+          "meshStructure": "Missing pending user upload",
+          "animations": []
+        },
+        "rook": {
+          "path": "",
+          "meshStructure": "Missing pending user upload",
+          "animations": []
+        },
+        "knight": {
+          "path": "./models/nuevos/dragones/caballo.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "bishop": {
+          "path": "./models/nuevos/dragones/alfil.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "queen": {
+          "path": "./models/nuevos/dragones/reina.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        },
+        "king": {
+          "path": "./models/nuevos/dragones/reydragon.glb",
+          "meshStructure": "Mesh / Node Structure",
+          "animations": []
+        }
+      }
+    }
+  },
+  "bosses_and_environment": {
+    "reyhumano": {
+      "path": "./models/reyhumano.glb"
+    },
+    "reynomuerto": {
+      "path": "./models/reynomuerto.glb"
+    },
+    "alanegra": {
+      "path": "./models/alanegra.glb"
+    },
+    "Dimensius": {
+      "path": "./models/Dimensius.glb"
+    },
+    "rocaverde": {
+      "path": "./models/rocaverde.glb"
+    },
+    "arbolverde": {
+      "path": "./models/arbolverde.glb"
+    }
+  }
+}

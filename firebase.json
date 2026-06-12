@@ -6,30 +6,68 @@
     "indexes": "firestore.indexes.json"
   },
   "hosting": {
-    "public": "public",
+    "target": "arena",
+    "public": ".",
     "ignore": [
       "firebase.json",
-      "**/.*",
+      "firestore.rules",
+      "firestore.indexes.json",
+      ".firebaserc",
+      ".firebase/**",
+      ".git/**",
+      ".gitignore",
+      ".env",
       "**/node_modules/**",
       "server.js",
       "package.json",
       "package-lock.json",
       "test_db.js",
-      ".env",
-      "output.txt"
+      "output.txt",
+      "public/**",
+      "temp_models/**"
     ],
     "rewrites": [
       {
         "source": "**",
         "destination": "/index.html"
       }
+    ],
+    "headers": [
+      {
+        "source": "**/*.glb",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=604800"
+          }
+        ]
+      },
+      {
+        "source": "**/*.jpg",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=604800"
+          }
+        ]
+      },
+      {
+        "source": "**/*.png",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=604800"
+          }
+        ]
+      }
     ]
   },
   "auth": {
     "providers": {
+      "anonymous": true,
       "emailPassword": true,
       "googleSignIn": {
-        "oAuthBrandDisplayName": "Chess Coliseum",
+        "oAuthBrandDisplayName": "Chess Coliseum Pro",
         "supportEmail": "josetrujillog@gmail.com"
       }
     }

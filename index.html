@@ -1185,6 +1185,9 @@
     </div>
 
 
+    <!-- Motor único de ajedrez (reglas + estado). Compartido con aiWorker.js y server.js -->
+    <script src="engine.js?v=1"></script>
+
     <script
         type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"}}</script>
     <script type="module">
@@ -1209,8 +1212,15 @@
         // ─── GLOBALS ──────────────────────────────
         let scene, camera, renderer, composer, controls, raycaster, mouse, clock;
         let board = [], pieces = [], particles = [];
-        let selectedPiece = null, validMoves = [], turn = 'white', animating = false;
+        let selectedPiece = null, validMoves = [], animating = false;
         const SZ = 5, SC = 2.5, BS = 8;
+
+        // ─── MOTOR DE AJEDREZ (fuente única de verdad) ─────────
+        // `pieces` de arriba son solo los actores 3D; las reglas,
+        // el turno y el estado viven en el motor.
+        const engine = new ChessEngine();
+        let gameOver = false;
+        let remoteMoveQueue = []; // movimientos del rival que llegan durante una animación
 
         // ─── AI GLOBALS ──────────────────────────────
         let gameMode = 'pvp';  // 'pvp', 'ai', or 'multiplayer'
@@ -1219,12 +1229,19 @@
         let multiplayerColor = null; // 'white' or 'black' in multiplayer
 
         let urlArmySkin = 'orcos';
+        let urlOpponentSkin = null;
         let urlColiseumId = null;
+        let pieceLoadGeneration = 0; // Incremented on every piece reset — stale async loads check this
+        let valderonBirds = null;
+        let veloGelidoSystem = null;
+        let vacioSystem = null;
+        let cumbresLavaSystem = null;
 
         // ─── INIT ─────────────────────────────────
         function init() {
             const params = new URLSearchParams(window.location.search);
             urlArmySkin = params.get('armySkin') || 'orcos';
+            urlOpponentSkin = params.get('opponentSkin') || null;
             urlColiseumId = params.get('coliseumId');
 
             clock = new THREE.Clock();
@@ -1280,17 +1297,19 @@
                 document.getElementById('game-modal').classList.add('hidden');
                 
                 // Normalize: replace hyphens with spaces for matching
+                // Dificultad ASCENDENTE de los coliseos (turnos que la IA mira adelante):
+                // Humanos = 1 · Hielo = 2 · Vacío = 4 · Dragones = 6
                 const coliseumNormalized = urlColiseumId.toLowerCase().replace(/-/g, ' ');
                 if (coliseumNormalized.includes('verde') || coliseumNormalized.includes('bosque') || coliseumNormalized.includes('aethelgard')) {
-                    aiLevel = 2; // Nivel Fácil, depth = 1
+                    aiLevel = 2; // Humanos: mira 1 turno adelante (fácil, además comete errores)
                 } else if (coliseumNormalized.includes('hielo') || coliseumNormalized.includes('frost') || coliseumNormalized.includes('velo')) {
-                    aiLevel = 4; // Nivel Medio, depth = 2
+                    aiLevel = 4; // No muertos: mira 2 turnos adelante
                 } else if (coliseumNormalized.includes('vacio') || coliseumNormalized.includes('fractura') || coliseumNormalized.includes('abismo') || coliseumNormalized.includes('cementerio')) {
-                    aiLevel = 7; // Nivel Difícil, depth = 3
+                    aiLevel = 8; // Vacío: mira 4 turnos adelante (sin errores)
                 } else if (coliseumNormalized.includes('volcan') || coliseumNormalized.includes('cumbres') || coliseumNormalized.includes('ceniza') || coliseumNormalized.includes('dragon')) {
-                    aiLevel = 10; // Nivel Experto, depth = 4
+                    aiLevel = 10; // Dragones: mira 6 turnos adelante (reto máximo, con tope de 10s por jugada)
                 } else {
-                    aiLevel = 2; // Default: fácil (depth 1)
+                    aiLevel = 2; // Default: fácil
                 }
             } else {
                 // No coliseumId — show the modal so user picks mode
@@ -1310,30 +1329,95 @@
 
         // ─── LIGHTS ───────────────────────────────
         function setupLights() {
-            // Bright midday ambient
-            const hemi = new THREE.HemisphereLight(0xaaddff, 0xB09060, 4.0);
-            scene.add(hemi);
-            // Main sun - high noon, directly overhead
+            const colNorm = (urlColiseumId || '').toLowerCase().replace(/-/g, ' ');
+            if (colNorm === 'cementerio' || colNorm === 'shadow') {
+                scene.add(new THREE.HemisphereLight(0xb060ff, 0x301050, 4.5));
+                const keyL = new THREE.DirectionalLight(0xd098ff, 7.0);
+                keyL.position.set(-25, 55, -30); scene.add(keyL);
+                const rim = new THREE.DirectionalLight(0xff70d0, 5.0);
+                rim.position.set(30, 18, 40); scene.add(rim);
+                const fill = new THREE.DirectionalLight(0x8050d0, 4.0);
+                fill.position.set(40, 15, 0); scene.add(fill);
+                const topFill = new THREE.DirectionalLight(0xe8b8ff, 3.8);
+                topFill.position.set(0, 80, 0); scene.add(topFill);
+                const riftPt = new THREE.PointLight(0xc040ff, 48, 140);
+                riftPt.position.set(0, 28, 55); scene.add(riftPt);
+                const boardGlowPt = new THREE.PointLight(0xff60d0, 16, 70);
+                boardGlowPt.position.set(0, 6, 0); scene.add(boardGlowPt);
+                const sideL = new THREE.PointLight(0xb060ff, 20, 90);
+                sideL.position.set(-50, 12, 0); scene.add(sideL);
+                const sideR = new THREE.PointLight(0xff60c0, 18, 90);
+                sideR.position.set(50, 12, 0); scene.add(sideR);
+                const frontFill = new THREE.PointLight(0xffa8e8, 14, 100);
+                frontFill.position.set(0, 18, -35); scene.add(frontFill);
+                return;
+            }
+            if (colNorm === 'volcan' || colNorm === 'volcano') {
+                scene.add(new THREE.HemisphereLight(0xff8048, 0x301008, 5.3));
+                const keyL = new THREE.DirectionalLight(0xffb060, 7.7);
+                keyL.position.set(-30, 55, -30); scene.add(keyL);
+                const rim = new THREE.DirectionalLight(0xff5020, 6.7);
+                rim.position.set(30, 18, 40); scene.add(rim);
+                const fill = new THREE.DirectionalLight(0xff8030, 4.5);
+                fill.position.set(40, 15, 0); scene.add(fill);
+                const topFill = new THREE.DirectionalLight(0xffb888, 3.9);
+                topFill.position.set(0, 80, 0); scene.add(topFill);
+                const sideL = new THREE.PointLight(0xff7030, 17, 80);
+                sideL.position.set(-50, 12, 0); scene.add(sideL);
+                const sideR = new THREE.PointLight(0xffa040, 17, 80);
+                sideR.position.set(50, 12, 0); scene.add(sideR);
+                return;
+            }
+            if (colNorm === 'hielo' || colNorm === 'frost') {
+                scene.add(new THREE.HemisphereLight(0xb8d4f0, 0x1a2840, 3.8));
+                const moon = new THREE.DirectionalLight(0xc8d8ff, 0.7);
+                moon.position.set(-30, 70, -20); scene.add(moon);
+                const rim = new THREE.DirectionalLight(0x90b8d8, 3.2);
+                rim.position.set(30, 20, 40); scene.add(rim);
+                const fill = new THREE.DirectionalLight(0x7aa8cc, 2.8);
+                fill.position.set(0, 15, -50); scene.add(fill);
+                const throneGlowPt = new THREE.PointLight(0x60c8ff, 18, 80);
+                throneGlowPt.position.set(0, 16, 55); scene.add(throneGlowPt);
+                const boardGlow = new THREE.PointLight(0x80c4f0, 10, 70);
+                boardGlow.position.set(0, 6, 0); scene.add(boardGlow);
+                for (let i = 0; i < 4; i++) {
+                    const a = (i / 4) * Math.PI * 2;
+                    const pl = new THREE.PointLight(0xa8d4f0, 6.5, 55);
+                    pl.position.set(Math.cos(a) * 22, 8, Math.sin(a) * 22);
+                    scene.add(pl);
+                }
+                return;
+            }
+            if (colNorm === 'estadio verde') {
+                // Valderon: cathedral warm-gold lighting
+                scene.add(new THREE.HemisphereLight(0xf0f0e8, 0x6a7a60, 4.5));
+                const sun = new THREE.DirectionalLight(0xfff1c0, 8.0);
+                sun.position.set(-30, 60, 30); scene.add(sun);
+                const rim = new THREE.DirectionalLight(0xaaccee, 3.5);
+                rim.position.set(20, 30, -40); scene.add(rim);
+                const fill = new THREE.DirectionalLight(0xffe0b0, 3.2);
+                fill.position.set(40, 25, 10); scene.add(fill);
+                const goldSpot = new THREE.SpotLight(0xfff4d8, 96, 120, Math.PI / 3.5, 0.6, 1.2);
+                goldSpot.position.set(0, 60, 0);
+                goldSpot.target.position.set(0, 0, 0);
+                scene.add(goldSpot); scene.add(goldSpot.target);
+                for (let i = 0; i < 6; i++) {
+                    const a = (i / 6) * Math.PI * 2;
+                    const pl = new THREE.PointLight(0xfff0d0, 4.0, 90);
+                    pl.position.set(Math.cos(a) * 35, 20, Math.sin(a) * 35);
+                    scene.add(pl);
+                }
+                return;
+            }
+            // Generic: bright midday
+            scene.add(new THREE.HemisphereLight(0xaaddff, 0xB09060, 4.0));
             const sun = new THREE.DirectionalLight(0xfff8ee, 8.0);
-            sun.position.set(10, 80, 10);
-            sun.castShadow = false;
-            // Shadows disabled for performance
-            // sun.shadow.mapSize.set(4096, 4096);
-            // sun.shadow.camera.near = 1; sun.shadow.camera.far = 200;
-            // sun.shadow.camera.left = -50; sun.shadow.camera.right = 50;
-            // sun.shadow.camera.top = 50; sun.shadow.camera.bottom = -50;
-            // sun.shadow.bias = -0.0005;
-            // sun.shadow.normalBias = 0.02;
+            sun.position.set(10, 80, 10); sun.castShadow = false;
             scene.add(sun);
-            // Warm fill from opposite side
             const fill = new THREE.DirectionalLight(0xffeedd, 1.5);
-            fill.position.set(-30, 50, -20);
-            scene.add(fill);
-            // Cool fill to simulate sky bounce
+            fill.position.set(-30, 50, -20); scene.add(fill);
             const rim = new THREE.DirectionalLight(0x88bbff, 1.0);
-            rim.position.set(0, 40, 60);
-            scene.add(rim);
-            // Extra ambient spots for even illumination
+            rim.position.set(0, 40, 60); scene.add(rim);
             for (let i = 0; i < 4; i++) {
                 const spot = new THREE.PointLight(0xffffff, 1.5, 120);
                 const a = (i / 4) * Math.PI * 2;
@@ -1344,7 +1428,28 @@
 
         // ─── ENVIRONMENT ──────────────────────────
         function createEnvironment() {
-            // Bright midday sky
+            const colNorm = (urlColiseumId || '').toLowerCase().replace(/-/g, ' ');
+            if (colNorm === 'cementerio' || colNorm === 'shadow') {
+                scene.background = new THREE.Color(0x140828);
+                scene.fog = new THREE.FogExp2(0x2a1245, 0.0055);
+                return;
+            }
+            if (colNorm === 'volcan' || colNorm === 'volcano') {
+                scene.background = new THREE.Color(0x180a08);
+                scene.fog = new THREE.FogExp2(0x401812, 0.0055);
+                return;
+            }
+            if (colNorm === 'hielo' || colNorm === 'frost') {
+                scene.background = new THREE.Color(0x0a1628);
+                scene.fog = new THREE.FogExp2(0x4a6a8a, 0.004);
+                return;
+            }
+            if (colNorm === 'estadio verde') {
+                scene.background = new THREE.Color(0x4a7060);
+                scene.fog = new THREE.FogExp2(0x5a8070, 0.002);
+                return;
+            }
+            // Generic: bright midday sky
             const skyGeo = new THREE.SphereGeometry(400, 32, 32);
             const skyMat = new THREE.ShaderMaterial({
                 side: THREE.BackSide,
@@ -1530,8 +1635,934 @@
 
         // ─── COLISEUM / ARENA ─────────────────────
         function createColiseum() {
-            const coliseumId = urlColiseumId ? urlColiseumId.toLowerCase() : 'estadio verde';
-            buildProceduralArena(coliseumId);
+            const colNorm = (urlColiseumId || '').toLowerCase().replace(/-/g, ' ');
+            if (colNorm === 'estadio verde') {
+                buildValderonArena();
+                return;
+            }
+            if (colNorm === 'hielo' || colNorm === 'frost') {
+                buildVeloGelidoArena();
+                return;
+            }
+            if (colNorm === 'cementerio' || colNorm === 'shadow') {
+                buildFracturaVacioArena();
+                return;
+            }
+            if (colNorm === 'volcan' || colNorm === 'volcano') {
+                buildCumbresLavaArena();
+                return;
+            }
+            buildProceduralArena(colNorm);
+        }
+
+        function buildValderonArena() {
+            // Procedural mossy stone texture
+            function mossyStoneTex() {
+                const c = document.createElement('canvas');
+                c.width = c.height = 512;
+                const ctx = c.getContext('2d');
+                ctx.fillStyle = '#3a4a2c';
+                ctx.fillRect(0, 0, 512, 512);
+                for (let i = 0; i < 300; i++) {
+                    const xx = Math.random() * 512, yy = Math.random() * 512;
+                    const r = Math.random() * 50 + 10;
+                    ctx.fillStyle = `rgba(80,85,65,${(Math.random() * .3 + .1).toFixed(2)})`;
+                    ctx.beginPath();
+                    ctx.ellipse(xx, yy, r, r * .7, Math.random() * Math.PI, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                for (let i = 0; i < 1200; i++) {
+                    const xx = Math.random() * 512, yy = Math.random() * 512;
+                    ctx.fillStyle = Math.random() > .5
+                        ? `rgba(100,140,60,${(Math.random() * .4).toFixed(2)})`
+                        : `rgba(40,70,30,${(Math.random() * .5).toFixed(2)})`;
+                    ctx.fillRect(xx, yy, Math.random() * 4 + 1, Math.random() * 4 + 1);
+                }
+                const t = new THREE.CanvasTexture(c);
+                t.wrapS = t.wrapT = THREE.RepeatWrapping;
+                t.repeat.set(6, 6);
+                t.colorSpace = THREE.SRGBColorSpace;
+                return t;
+            }
+
+            const mMossy  = new THREE.MeshStandardMaterial({ map: mossyStoneTex(), roughness: .95, metalness: 0 });
+            const mStone  = new THREE.MeshStandardMaterial({ map: plasterTexture, color: 0x7a7668, roughness: .9 });
+            const mGold   = new THREE.MeshStandardMaterial({ color: 0xc8a048, roughness: .35, metalness: .85, emissive: new THREE.Color(0x2a1800), emissiveIntensity: .3 });
+            const mPillar = new THREE.MeshStandardMaterial({ color: 0x6a6860, roughness: .85, map: plasterTexture });
+            const mVine   = new THREE.MeshStandardMaterial({ color: 0x2a4a1a, roughness: .95 });
+            const mGround = new THREE.MeshStandardMaterial({ color: 0x1a2818, roughness: 1 });
+            const mTrunk  = new THREE.MeshStandardMaterial({ color: 0x1a1008, roughness: 1 });
+            const mCrown  = new THREE.MeshStandardMaterial({ color: 0x0c1a0a, roughness: 1 });
+
+            // ── 3 stepped stone tiers ──
+            const tier3 = new THREE.Mesh(new THREE.CylinderGeometry(55, 58, 3, 8), mMossy);
+            tier3.position.y = -4; scene.add(tier3);
+            const tier2 = new THREE.Mesh(new THREE.CylinderGeometry(44, 46, 2.5, 8), mStone);
+            tier2.position.y = -1.5; scene.add(tier2);
+            const tier1 = new THREE.Mesh(new THREE.CylinderGeometry(36, 37, 1.2, 8), mStone);
+            tier1.position.y = 0; scene.add(tier1);
+
+            // ── Gold ring torus around the board ──
+            const ring = new THREE.Mesh(new THREE.TorusGeometry(30, 0.5, 16, 64), mGold);
+            ring.rotation.x = Math.PI / 2;
+            ring.position.y = 0.65;
+            scene.add(ring);
+
+            // ── 8 broken pillars with vines ──
+            function makePillar(px, pz) {
+                const g = new THREE.Group();
+                const base = new THREE.Mesh(new THREE.BoxGeometry(3, 1, 3), mStone);
+                base.position.y = .5; g.add(base);
+                const col = new THREE.Mesh(new THREE.CylinderGeometry(1, 1.1, 18, 12), mPillar);
+                col.position.y = 10; g.add(col);
+                const cap1 = new THREE.Mesh(new THREE.BoxGeometry(2.6, .8, 2.6), mStone);
+                cap1.position.y = 19.5; g.add(cap1);
+                const cap2 = new THREE.Mesh(new THREE.BoxGeometry(3.2, .5, 3.2), mGold);
+                cap2.position.y = 19.9; g.add(cap2);
+                if (Math.random() > .5) {
+                    const brk = new THREE.Mesh(new THREE.BoxGeometry(1.5, 2, 1.5), mPillar);
+                    brk.position.set((Math.random() - .5), 21, (Math.random() - .5));
+                    brk.rotation.set(Math.random() * .4, Math.random(), Math.random() * .4);
+                    g.add(brk);
+                }
+                // Vine ribbon down the pillar
+                const curve = new THREE.CatmullRomCurve3([
+                    new THREE.Vector3(0, 20, 0), new THREE.Vector3(.5, 14, .3),
+                    new THREE.Vector3(-.3, 8, -.4), new THREE.Vector3(.4, 2, .2),
+                ]);
+                g.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 18, .1, 6, false), mVine));
+                g.position.set(px, 0, pz);
+                return g;
+            }
+            const PILLAR_R = 44;
+            for (let i = 0; i < 8; i++) {
+                const a = (i / 8) * Math.PI * 2;
+                scene.add(makePillar(Math.cos(a) * PILLAR_R, Math.sin(a) * PILLAR_R));
+            }
+
+            // ── Forest floor ──
+            const ground = new THREE.Mesh(new THREE.CircleGeometry(120, 32), mGround);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = -5.5;
+            scene.add(ground);
+
+            // ── Dark tree silhouettes (60 cones) ──
+            for (let i = 0; i < 60; i++) {
+                const a = Math.random() * Math.PI * 2;
+                const r = 70 + Math.random() * 40;
+                const h = 12 + Math.random() * 18;
+                const tg = new THREE.Group();
+                const trunk = new THREE.Mesh(new THREE.CylinderGeometry(.4, .6, h * .4, 6), mTrunk);
+                trunk.position.y = h * .2; tg.add(trunk);
+                const crown = new THREE.Mesh(new THREE.ConeGeometry(h * .35, h * .8, 8), mCrown);
+                crown.position.y = h * .6; tg.add(crown);
+                tg.position.set(Math.cos(a) * r, -5, Math.sin(a) * r);
+                scene.add(tg);
+            }
+
+            // ── Fallen statue (narrative piece) ──
+            const statueG = new THREE.Group();
+            const torso = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.4, 4, 10), mStone);
+            torso.position.set(0, 2, 0); torso.rotation.z = Math.PI / 3;
+            statueG.add(torso);
+            statueG.position.set(-38, -3.5, 20); statueG.rotation.y = .4;
+            scene.add(statueG);
+
+            // ── Birds (inlined from birds.js) ──
+            const BIRD_COUNT = 14, BIRD_COLOR = 0x1a1a1a, BIRD_SPEED = 0.3;
+            const bMat = new THREE.MeshStandardMaterial({
+                color: BIRD_COLOR, roughness: .7, metalness: .05,
+                emissive: new THREE.Color(BIRD_COLOR), emissiveIntensity: .08,
+                side: THREE.DoubleSide, flatShading: true,
+            });
+            const bGroup = new THREE.Group();
+            const bData = [];
+            for (let i = 0; i < BIRD_COUNT; i++) {
+                const b = new THREE.Group();
+                const body = new THREE.Mesh(new THREE.SphereGeometry(.385, 6, 5), bMat);
+                body.scale.set(1.6, .7, .7); b.add(body);
+                const head = new THREE.Mesh(new THREE.SphereGeometry(.242, 5, 5), bMat);
+                head.position.set(.605, .088, 0); b.add(head);
+                const tail = new THREE.Mesh(new THREE.ConeGeometry(.198, .55, 4), bMat);
+                tail.rotation.z = Math.PI / 2; tail.position.set(-.605, 0, 0); b.add(tail);
+                const wGeo = new THREE.PlaneGeometry(1.54, .605);
+                const wL = new THREE.Mesh(wGeo, bMat); wL.position.set(0, .11, -.33); wL.rotation.x = Math.PI / 2;
+                const wR = new THREE.Mesh(wGeo, bMat); wR.position.set(0, .11, .33); wR.rotation.x = -Math.PI / 2;
+                const pL = new THREE.Group(); pL.position.z = -.11; pL.add(wL);
+                const pR = new THREE.Group(); pR.position.z = .11; pR.add(wR);
+                b.add(pL); b.add(pR);
+                const phase = Math.random() * Math.PI * 2;
+                const r = 55 * (.7 + Math.random() * .6);
+                const y = 32 + (Math.random() - .5) * 10;
+                const flapPhase = Math.random() * Math.PI * 2;
+                const flapSpeed = 6 + Math.random() * 4;
+                const speedMul = .8 + Math.random() * .6;
+                const vertical = Math.random() * .5;
+                bGroup.add(b);
+                bData.push({ mesh: b, phase, r, y, flapPhase, flapSpeed, speedMul, pL, pR, vertical });
+            }
+            scene.add(bGroup);
+            valderonBirds = {
+                update(t) {
+                    for (const b of bData) {
+                        const a = b.phase + t * BIRD_SPEED * b.speedMul;
+                        b.mesh.position.set(
+                            Math.cos(a) * b.r,
+                            b.y + Math.sin(t * 1.3 + b.phase) * b.vertical,
+                            Math.sin(a) * b.r
+                        );
+                        b.mesh.rotation.y = -a + Math.PI / 2;
+                        b.mesh.rotation.z = .2;
+                        const flap = Math.sin(t * b.flapSpeed + b.flapPhase) * .9;
+                        b.pL.rotation.x = flap;
+                        b.pR.rotation.x = -flap;
+                    }
+                }
+            };
+        }
+
+        function buildVeloGelidoArena() {
+            // ── Procedural textures ──────────────────────────────
+            function iceTex() {
+                const c = document.createElement('canvas'); c.width = c.height = 512;
+                const x = c.getContext('2d');
+                const g = x.createRadialGradient(256, 256, 40, 256, 256, 360);
+                g.addColorStop(0, '#dff2ff'); g.addColorStop(.55, '#a8d4ec'); g.addColorStop(1, '#6e9ec0');
+                x.fillStyle = g; x.fillRect(0, 0, 512, 512);
+                for (let i = 0; i < 28; i++) {
+                    x.strokeStyle = `rgba(255,255,255,${Math.random() * .5 + .3})`; x.lineWidth = Math.random() * 1.3 + .4;
+                    x.beginPath(); let px = Math.random() * 512, py = Math.random() * 512; x.moveTo(px, py);
+                    for (let s = 0; s < 6; s++) { px += (Math.random() - .5) * 120; py += (Math.random() - .5) * 120; x.lineTo(px, py); }
+                    x.stroke();
+                }
+                for (let i = 0; i < 140; i++) {
+                    x.fillStyle = `rgba(255,255,255,${Math.random() * .4 + .1})`;
+                    x.beginPath(); x.arc(Math.random() * 512, Math.random() * 512, Math.random() * 2.5 + .4, 0, Math.PI * 2); x.fill();
+                }
+                const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; return t;
+            }
+            function obsidianTex() {
+                const c = document.createElement('canvas'); c.width = c.height = 512;
+                const x = c.getContext('2d');
+                x.fillStyle = '#0a0a10'; x.fillRect(0, 0, 512, 512);
+                for (let i = 0; i < 20; i++) {
+                    x.strokeStyle = `rgba(${40 + Math.random() * 40},${50 + Math.random() * 60},${80 + Math.random() * 80},${Math.random() * .45 + .15})`;
+                    x.lineWidth = Math.random() * 1.1 + .3; x.beginPath();
+                    let px = Math.random() * 512, py = Math.random() * 512; x.moveTo(px, py);
+                    for (let s = 0; s < 5; s++) { px += (Math.random() - .5) * 140; py += (Math.random() - .5) * 140; x.lineTo(px, py); }
+                    x.stroke();
+                }
+                for (let i = 0; i < 200; i++) {
+                    x.fillStyle = `rgba(180,220,255,${Math.random() * .2})`; x.fillRect(Math.random() * 512, Math.random() * 512, 1, 1);
+                }
+                const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; return t;
+            }
+            function stoneTombTex() {
+                const c = document.createElement('canvas'); c.width = c.height = 512;
+                const x = c.getContext('2d');
+                x.fillStyle = '#3a4858'; x.fillRect(0, 0, 512, 512);
+                for (let i = 0; i < 260; i++) {
+                    const xx = Math.random() * 512, yy = Math.random() * 512, r = Math.random() * 48 + 8;
+                    x.fillStyle = `rgba(${60 + Math.random() * 40},${75 + Math.random() * 40},${95 + Math.random() * 40},${Math.random() * .35 + .1})`;
+                    x.beginPath(); x.ellipse(xx, yy, r, r * .7, Math.random() * Math.PI, 0, Math.PI * 2); x.fill();
+                }
+                for (let i = 0; i < 1100; i++) {
+                    x.fillStyle = `rgba(220,235,255,${Math.random() * .45})`;
+                    x.fillRect(Math.random() * 512, Math.random() * 512, Math.random() * 3 + .5, Math.random() * 3 + .5);
+                }
+                const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(4, 4); t.colorSpace = THREE.SRGBColorSpace; return t;
+            }
+
+            const iceMap = iceTex(); const obsMap = obsidianTex(); const tombMap = stoneTombTex();
+
+            // ── Materials ─────────────────────────────────────────
+            const M = {
+                iceBlock: new THREE.MeshPhysicalMaterial({ color: 0xa8d0e8, roughness: .28, metalness: 0, transmission: .55, thickness: 1.2, ior: 1.31, clearcoat: .8, clearcoatRoughness: .2, emissive: 0x4a90c0, emissiveIntensity: .18 }),
+                iceSurface: new THREE.MeshPhysicalMaterial({ map: iceMap, color: 0xcfe6f8, roughness: .18, metalness: 0, transmission: .45, thickness: .6, ior: 1.31, clearcoat: .7, clearcoatRoughness: .25, emissive: 0x6aa8d0, emissiveIntensity: .18 }),
+                silverTrim: new THREE.MeshStandardMaterial({ color: 0xc0d8ee, roughness: .3, metalness: .85, emissive: 0x102030, emissiveIntensity: .2 }),
+                stoneTomb: new THREE.MeshStandardMaterial({ map: tombMap, color: 0x445566, roughness: .85, metalness: .05 }),
+                bone: new THREE.MeshStandardMaterial({ color: 0xe0dccc, roughness: .7, metalness: .05 }),
+                mountain: new THREE.MeshStandardMaterial({ color: 0x1e2c40, roughness: 1 }),
+                snowCap: new THREE.MeshStandardMaterial({ color: 0xc8d8ee, roughness: .6, emissive: 0x405068, emissiveIntensity: .2 }),
+            };
+
+            // ── Frozen lake (infinite, micro-displaced) ───────────
+            const lakeGeo = new THREE.PlaneGeometry(900, 900, 80, 80);
+            const lPos = lakeGeo.attributes.position;
+            for (let i = 0; i < lPos.count; i++) {
+                const lx = lPos.getX(i), ly = lPos.getY(i), lr = Math.sqrt(lx * lx + ly * ly);
+                if (lr > 40) lPos.setZ(i, (Math.sin(lx * .06) * Math.cos(ly * .06) * .4) + (Math.random() - .5) * .15);
+            }
+            lakeGeo.computeVertexNormals();
+            const lake = new THREE.Mesh(lakeGeo, new THREE.MeshPhysicalMaterial({ color: 0x6090b0, roughness: .22, metalness: 0, transmission: .25, thickness: 1.4, ior: 1.31, clearcoat: .9, clearcoatRoughness: .18, emissive: 0x1a3850, emissiveIntensity: .25 }));
+            lake.rotation.x = -Math.PI / 2; lake.position.y = -1.5; scene.add(lake);
+
+            // Ice cracks on lake surface
+            for (let i = 0; i < 22; i++) {
+                const pts = []; let cx = (Math.random() - .5) * 200, cz = (Math.random() - .5) * 200, ang = Math.random() * Math.PI * 2;
+                for (let s = 0; s < 10; s++) {
+                    pts.push(new THREE.Vector3(cx, -1.42, cz));
+                    cx += Math.cos(ang) * (Math.random() * 8 + 4); cz += Math.sin(ang) * (Math.random() * 8 + 4); ang += (Math.random() - .5) * .6;
+                }
+                const crackGeo = new THREE.BufferGeometry().setFromPoints(pts);
+                scene.add(new THREE.Line(crackGeo, new THREE.LineBasicMaterial({ color: 0xb8d8ee, transparent: true, opacity: .35 })));
+            }
+
+            // ── Ice plateau tiers (surround for the board) ────────
+            const t2 = new THREE.Mesh(new THREE.CylinderGeometry(34, 35, .6, 48), M.iceBlock);
+            t2.position.y = -.6; scene.add(t2);
+            const t1 = new THREE.Mesh(new THREE.CylinderGeometry(31, 32, .8, 48), M.iceBlock);
+            t1.position.y = .05; scene.add(t1);
+            const ring1 = new THREE.Mesh(new THREE.TorusGeometry(28.2, 0.32, 16, 72), M.silverTrim);
+            ring1.rotation.x = Math.PI / 2; ring1.position.y = .55; scene.add(ring1);
+            const ring2 = new THREE.Mesh(new THREE.TorusGeometry(22.5, 0.12, 12, 72), M.silverTrim);
+            ring2.rotation.x = Math.PI / 2; ring2.position.y = .58; scene.add(ring2);
+
+            // ── Ice throne (far back, dominant centerpiece) ───────
+            const throneG = new THREE.Group();
+            for (let s = 0; s < 3; s++) {
+                const r = 10 - s * 2;
+                const dais = new THREE.Mesh(new THREE.BoxGeometry(r, 1.2, r * .7), M.iceBlock);
+                dais.position.y = -1 + s * 1.2; throneG.add(dais);
+            }
+            const seat = new THREE.Mesh(new THREE.BoxGeometry(5, 1.4, 4), M.iceBlock);
+            seat.position.y = 3.5; throneG.add(seat);
+            const back = new THREE.Mesh(new THREE.BoxGeometry(5, 9, 1.2), M.iceBlock);
+            back.position.set(0, 7.8, -1.6); throneG.add(back);
+            for (let i = 0; i < 7; i++) {
+                const h = 4 + Math.random() * 4;
+                const sp = new THREE.Mesh(new THREE.ConeGeometry(.55 + Math.random() * .35, h, 5), M.iceBlock);
+                sp.position.set(-2.4 + i * .8, 11.5 + h / 2 - 1, -1.8); sp.rotation.z = (Math.random() - .5) * .18; throneG.add(sp);
+            }
+            function throneWing(side) {
+                const g = new THREE.Group();
+                for (let i = 0; i < 4; i++) {
+                    const h = 3 + i * 1.5;
+                    const sl = new THREE.Mesh(new THREE.BoxGeometry(.7, h, 2.2), M.iceBlock);
+                    sl.position.set(side * (.4 + i * .5), 3 + h / 2, -.8 - i * .3); sl.rotation.z = side * (Math.random() * .12 + .05); g.add(sl);
+                }
+                return g;
+            }
+            const wL = throneWing(-1); wL.position.set(-2.6, 0, 0); throneG.add(wL);
+            const wR = throneWing(1); wR.position.set(2.6, 0, 0); throneG.add(wR);
+            // Broken crown
+            const crownG = new THREE.Group();
+            const crownRing = new THREE.Mesh(new THREE.TorusGeometry(1.4, .2, 10, 32), M.silverTrim);
+            crownRing.rotation.x = Math.PI / 2; crownG.add(crownRing);
+            for (let i = 0; i < 5; i++) {
+                const a = (i / 5) * Math.PI * 2;
+                const tip = new THREE.Mesh(new THREE.ConeGeometry(.3, 1.2, 5), M.silverTrim);
+                tip.position.set(Math.cos(a) * 1.4, .8, Math.sin(a) * 1.4);
+                if (i === 2) { tip.rotation.z = .9; tip.position.y -= .2; }
+                crownG.add(tip);
+            }
+            crownG.position.set(0, 15, -1); crownG.rotation.z = .18; throneG.add(crownG);
+            throneG.position.set(0, 0, 55); scene.add(throneG);
+
+            // Crown halo glow plane
+            const haloMat = new THREE.MeshBasicMaterial({ color: 0x6acfff, transparent: true, opacity: .18, depthWrite: false, blending: THREE.AdditiveBlending });
+            const halo = new THREE.Mesh(new THREE.PlaneGeometry(7, 7), haloMat);
+            halo.position.set(0, 15, 55.1); scene.add(halo);
+
+            // ── Broken sarcophagi around plateau ──────────────────
+            function buildSarcophagus(sx, sz, rot, broken) {
+                const g = new THREE.Group();
+                const body = new THREE.Mesh(new THREE.BoxGeometry(2, 1.2, 5), M.stoneTomb); body.position.y = .6; g.add(body);
+                const lid = new THREE.Mesh(new THREE.BoxGeometry(2.2, .5, 5.2), M.stoneTomb);
+                if (broken) {
+                    lid.position.set(.6, 1.05, 1.6); lid.rotation.set(0, .3, .4);
+                    const piece = new THREE.Mesh(new THREE.BoxGeometry(1.3, .35, 1.6), M.stoneTomb);
+                    piece.position.set(-1.4, .18, -2); piece.rotation.set(0, .7, .05); g.add(piece);
+                    const bone = new THREE.Mesh(new THREE.CylinderGeometry(.08, .1, 1.3, 6), M.bone);
+                    bone.position.set(.5, 1.4, -1.5); bone.rotation.set(.3, 0, .4); g.add(bone);
+                    const skull = new THREE.Mesh(new THREE.SphereGeometry(.32, 10, 8), M.bone);
+                    skull.position.set(.6, 1.55, -1.0); g.add(skull);
+                } else { lid.position.y = 1.3; }
+                g.add(lid);
+                const frost = new THREE.Mesh(new THREE.BoxGeometry(2.3, .06, 5.3), new THREE.MeshStandardMaterial({ color: 0xe8f0ff, roughness: .9, emissive: 0x4a78a0, emissiveIntensity: .1 }));
+                frost.position.y = 1.32; g.add(frost);
+                g.position.set(sx, 0, sz); g.rotation.y = rot; scene.add(g);
+            }
+            for (let i = 0; i < 10; i++) {
+                const a = (i / 10) * Math.PI * 2 + .15;
+                if (Math.abs(a - Math.PI / 2) < .5 || Math.abs(a - Math.PI * 1.5) < .5) continue;
+                const r = 42 + (Math.random() * 4 - 2);
+                buildSarcophagus(Math.cos(a) * r, Math.sin(a) * r, a + Math.PI / 2, Math.random() > .4);
+            }
+
+            // ── Ice shards / stalagmites ──────────────────────────
+            for (let i = 0; i < 26; i++) {
+                const a = Math.random() * Math.PI * 2, r = 46 + Math.random() * 40, h = 2 + Math.random() * 5;
+                const tilt = (Math.random() - .5) * .4;
+                const g = new THREE.Group();
+                const main = new THREE.Mesh(new THREE.ConeGeometry(.7 + Math.random() * .5, h, 6), M.iceBlock);
+                main.position.y = h / 2 - 1.4; main.rotation.z = tilt; g.add(main);
+                if (Math.random() > .4) {
+                    const s2 = new THREE.Mesh(new THREE.ConeGeometry(.3, h * .5, 5), M.iceBlock);
+                    s2.position.set(.6, h * .25 - 1.4, .3); s2.rotation.z = tilt - .3; g.add(s2);
+                }
+                g.position.set(Math.cos(a) * r, 0, Math.sin(a) * r); scene.add(g);
+            }
+
+            // ── Skulls on lake ────────────────────────────────────
+            for (let i = 0; i < 14; i++) {
+                const a = Math.random() * Math.PI * 2, r = 36 + Math.random() * 30;
+                const sk = new THREE.Mesh(new THREE.SphereGeometry(.32 + Math.random() * .18, 10, 8), M.bone);
+                sk.position.set(Math.cos(a) * r, -1.2, Math.sin(a) * r); scene.add(sk);
+            }
+
+            // ── Distant frozen peaks ──────────────────────────────
+            for (let i = 0; i < 14; i++) {
+                const a = Math.random() * Math.PI * 2, r = 170 + Math.random() * 60, h = 30 + Math.random() * 40;
+                const g = new THREE.Group();
+                const mountain = new THREE.Mesh(new THREE.ConeGeometry(h * .55, h, 6), M.mountain);
+                mountain.position.y = h / 2 - 2; g.add(mountain);
+                const snow = new THREE.Mesh(new THREE.ConeGeometry(h * .28, h * .35, 6), M.snowCap);
+                snow.position.y = h * .7 - 2; g.add(snow);
+                g.position.set(Math.cos(a) * r, 0, Math.sin(a) * r); scene.add(g);
+            }
+
+            // ── Aurora borealis (back sky) ────────────────────────
+            const aurora1 = new THREE.Mesh(new THREE.PlaneGeometry(600, 140), new THREE.MeshBasicMaterial({ color: 0x60c8a8, transparent: true, opacity: .16, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+            aurora1.position.set(0, 80, 200); scene.add(aurora1);
+            const aurora2 = new THREE.Mesh(new THREE.PlaneGeometry(500, 90), new THREE.MeshBasicMaterial({ color: 0x80a8e0, transparent: true, opacity: .13, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+            aurora2.position.set(-40, 95, 210); scene.add(aurora2);
+
+            // ── Crawling low fog ──────────────────────────────────
+            const fogPlanes = [];
+            for (let i = 0; i < 22; i++) {
+                const r = 12 + Math.random() * 60, a = Math.random() * Math.PI * 2, size = 20 + Math.random() * 30;
+                const plane = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.MeshBasicMaterial({ color: 0xb0c8e0, transparent: true, opacity: Math.random() * .18 + .04, depthWrite: false, blending: THREE.NormalBlending, side: THREE.DoubleSide }));
+                plane.rotation.x = -Math.PI / 2;
+                plane.position.set(Math.cos(a) * r, -.5 + Math.random() * 1.5, Math.sin(a) * r);
+                plane.userData = { baseY: plane.position.y, drift: Math.random() * .3 + .05, phase: Math.random() * Math.PI * 2 };
+                scene.add(plane); fogPlanes.push(plane);
+            }
+
+            // ── Snow particles ────────────────────────────────────
+            const SNOW_COUNT = 900;
+            const snowGeo = new THREE.BufferGeometry();
+            const snowPos = new Float32Array(SNOW_COUNT * 3);
+            const snowVel = new Float32Array(SNOW_COUNT);
+            for (let i = 0; i < SNOW_COUNT; i++) {
+                snowPos[i * 3] = (Math.random() - .5) * 240;
+                snowPos[i * 3 + 1] = Math.random() * 80;
+                snowPos[i * 3 + 2] = (Math.random() - .5) * 240;
+                snowVel[i] = .2 + Math.random() * .4;
+            }
+            snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPos, 3));
+            const snowPts = new THREE.Points(snowGeo, new THREE.PointsMaterial({ color: 0xffffff, size: .35, transparent: true, opacity: .75, depthWrite: false, blending: THREE.AdditiveBlending }));
+            scene.add(snowPts);
+
+            veloGelidoSystem = {
+                update(t) {
+                    // Snow fall
+                    const arr = snowGeo.attributes.position.array;
+                    for (let i = 0; i < SNOW_COUNT; i++) {
+                        arr[i * 3 + 1] -= snowVel[i] * .18;
+                        arr[i * 3] += Math.sin(t * .4 + i) * .02;
+                        if (arr[i * 3 + 1] < -1) {
+                            arr[i * 3 + 1] = 70 + Math.random() * 15;
+                            arr[i * 3] = (Math.random() - .5) * 240;
+                            arr[i * 3 + 2] = (Math.random() - .5) * 240;
+                        }
+                    }
+                    snowGeo.attributes.position.needsUpdate = true;
+                    // Fog drift
+                    for (const p of fogPlanes) {
+                        p.position.y = p.userData.baseY + Math.sin(t * p.userData.drift + p.userData.phase) * .4;
+                        p.material.opacity = Math.max(.04, .10 + Math.sin(t * .4 + p.userData.phase) * .05);
+                        p.rotation.z += .0008;
+                    }
+                    // Aurora pulse
+                    aurora1.material.opacity = .12 + Math.sin(t * .3) * .05;
+                    aurora2.material.opacity = .10 + Math.sin(t * .4 + 1) * .04;
+                    // Crown halo pulse
+                    halo.material.opacity = .14 + Math.sin(t * 1.3) * .06;
+                }
+            };
+        }
+
+        function buildFracturaVacioArena() {
+            // ── Procedural textures ──────────────────────────────
+            function voidStoneTex() {
+                const c = document.createElement('canvas'); c.width = c.height = 512;
+                const x = c.getContext('2d');
+                const g = x.createRadialGradient(256, 256, 40, 256, 256, 360);
+                g.addColorStop(0, '#3a1058'); g.addColorStop(.55, '#1c0832'); g.addColorStop(1, '#0a0418');
+                x.fillStyle = g; x.fillRect(0, 0, 512, 512);
+                for (let i = 0; i < 28; i++) {
+                    x.strokeStyle = `rgba(${180 + Math.random() * 60},${40 + Math.random() * 40},${200 + Math.random() * 55},${Math.random() * .6 + .25})`;
+                    x.lineWidth = Math.random() * 1.4 + .4; x.beginPath();
+                    let px = Math.random() * 512, py = Math.random() * 512; x.moveTo(px, py);
+                    for (let s = 0; s < 6; s++) { px += (Math.random() - .5) * 120; py += (Math.random() - .5) * 120; x.lineTo(px, py); }
+                    x.stroke();
+                }
+                for (let i = 0; i < 260; i++) {
+                    x.fillStyle = `rgba(255,${80 + Math.random() * 100},${200 + Math.random() * 55},${Math.random() * .5 + .1})`;
+                    x.fillRect(Math.random() * 512, Math.random() * 512, Math.random() * 2 + .4, Math.random() * 2 + .4);
+                }
+                const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; return t;
+            }
+
+            const voidMap = voidStoneTex();
+
+            // ── Materials ─────────────────────────────────────────
+            const M = {
+                voidStone: new THREE.MeshStandardMaterial({ map: voidMap, color: 0x1a0828, roughness: .85, metalness: .15, emissive: 0x2a0a48, emissiveIntensity: .18 }),
+                magentaTrim: new THREE.MeshStandardMaterial({ color: 0xff60d0, roughness: .3, metalness: .7, emissive: 0xff40b8, emissiveIntensity: .65 }),
+                voidShard: new THREE.MeshPhysicalMaterial({ color: 0x6a18b0, roughness: .25, metalness: .1, transmission: .4, thickness: 1.0, ior: 1.45, clearcoat: .9, clearcoatRoughness: .15, emissive: 0xb030ff, emissiveIntensity: .45 }),
+                tentacle: new THREE.MeshStandardMaterial({ color: 0x14062a, roughness: .7, metalness: .2, emissive: 0x6020c0, emissiveIntensity: .3 }),
+                ground: new THREE.MeshStandardMaterial({ color: 0x0a0418, roughness: 1, emissive: 0x1a0428, emissiveIntensity: .15 }),
+            };
+
+            // ── Ground circle ─────────────────────────────────────
+            const ground = new THREE.Mesh(new THREE.CircleGeometry(140, 48), M.ground);
+            ground.rotation.x = -Math.PI / 2; ground.position.y = -1.5; scene.add(ground);
+
+            // ── Runic circles on ground ───────────────────────────
+            function runicCircle(radius) {
+                const pts = [];
+                for (let i = 0; i <= 64; i++) { const a = (i / 64) * Math.PI * 2; pts.push(new THREE.Vector3(Math.cos(a) * radius, -1.45, Math.sin(a) * radius)); }
+                const g = new THREE.BufferGeometry().setFromPoints(pts);
+                return new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0xff60d8, transparent: true, opacity: .7 }));
+            }
+            scene.add(runicCircle(38)); scene.add(runicCircle(36)); scene.add(runicCircle(50));
+            for (let i = 0; i < 8; i++) {
+                const a = (i / 8) * Math.PI * 2;
+                const pts = [new THREE.Vector3(Math.cos(a) * 36, -1.45, Math.sin(a) * 36), new THREE.Vector3(Math.cos(a) * 50, -1.45, Math.sin(a) * 50)];
+                scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0xff70e0, transparent: true, opacity: .55 })));
+            }
+
+            // ── Plateau tiers ─────────────────────────────────────
+            const pt2 = new THREE.Mesh(new THREE.CylinderGeometry(34, 35, .6, 48), M.voidStone); pt2.position.y = -.6; scene.add(pt2);
+            const pt1 = new THREE.Mesh(new THREE.CylinderGeometry(31, 32, .8, 48), M.voidStone); pt1.position.y = .05; scene.add(pt1);
+            const vring1 = new THREE.Mesh(new THREE.TorusGeometry(28.2, 0.32, 16, 72), M.magentaTrim); vring1.rotation.x = Math.PI / 2; vring1.position.y = .55; scene.add(vring1);
+            const vring2 = new THREE.Mesh(new THREE.TorusGeometry(22.5, 0.12, 12, 72), M.magentaTrim); vring2.rotation.x = Math.PI / 2; vring2.position.y = .58; scene.add(vring2);
+
+            // ── Void rift (3-layer glowing portal, far back) ──────
+            const riftGroup = new THREE.Group();
+            const riftOuter = new THREE.Mesh(new THREE.PlaneGeometry(46, 72), new THREE.MeshBasicMaterial({ color: 0x6818c0, transparent: true, opacity: .35, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+            riftOuter.position.set(0, 28, 0); riftGroup.add(riftOuter);
+            const riftMid = new THREE.Mesh(new THREE.PlaneGeometry(28, 58), new THREE.MeshBasicMaterial({ color: 0xc030ff, transparent: true, opacity: .45, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+            riftMid.position.set(0, 28, .3); riftGroup.add(riftMid);
+            const riftCore = new THREE.Mesh(new THREE.PlaneGeometry(10, 46), new THREE.MeshBasicMaterial({ color: 0xff80ff, transparent: true, opacity: .8, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+            riftCore.position.set(0, 28, .6); riftGroup.add(riftCore);
+            riftGroup.position.set(0, 0, 55); scene.add(riftGroup);
+
+            // ── Floating rock fragments ───────────────────────────
+            const fragments = [];
+            function rockFragment() {
+                const g = new THREE.Group();
+                const geo = new THREE.IcosahedronGeometry(1 + Math.random() * 2.5, 0);
+                const pos = geo.attributes.position;
+                for (let i = 0; i < pos.count; i++) pos.setXYZ(i, pos.getX(i) * (.7 + Math.random() * .6), pos.getY(i) * (.7 + Math.random() * .6), pos.getZ(i) * (.7 + Math.random() * .6));
+                geo.computeVertexNormals();
+                g.add(new THREE.Mesh(geo, M.voidStone));
+                if (Math.random() > .5) { const crack = new THREE.Mesh(new THREE.SphereGeometry(.18, 6, 6), M.magentaTrim); crack.position.set((Math.random() - .5) * 1.5, (Math.random() - .5) * 1.5, (Math.random() - .5) * 1.5); g.add(crack); }
+                return g;
+            }
+            for (let i = 0; i < 60; i++) {
+                const frag = rockFragment();
+                const a = Math.random() * Math.PI * 2, r = 42 + Math.random() * 60, y = 6 + Math.random() * 36;
+                frag.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
+                frag.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+                frag.userData = { baseY: y, floatSpeed: .2 + Math.random() * .4, floatPhase: Math.random() * Math.PI * 2, rotSpeed: new THREE.Vector3((Math.random() - .5) * .3, (Math.random() - .5) * .3, (Math.random() - .5) * .3) };
+                scene.add(frag); fragments.push(frag);
+            }
+
+            // ── Floating void shards ──────────────────────────────
+            for (let i = 0; i < 22; i++) {
+                const g = new THREE.Group();
+                const h = 3 + Math.random() * 5, w = .7 + Math.random() * 1.2;
+                g.add(new THREE.Mesh(new THREE.ConeGeometry(w, h, 5), M.voidStone));
+                const tip = new THREE.Mesh(new THREE.ConeGeometry(w * .3, h * .25, 5), M.magentaTrim); tip.position.y = h * .5; g.add(tip);
+                const a = Math.random() * Math.PI * 2, r = 46 + Math.random() * 55, y = 8 + Math.random() * 32;
+                g.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
+                g.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, (Math.random() - .5) * 1.4);
+                g.userData = { baseY: y, floatSpeed: .18 + Math.random() * .35, floatPhase: Math.random() * Math.PI * 2, rotSpeed: new THREE.Vector3((Math.random() - .5) * .2, (Math.random() - .5) * .25, (Math.random() - .5) * .2) };
+                scene.add(g); fragments.push(g);
+            }
+
+            // ── Broken floating columns ───────────────────────────
+            const colDefs = [[-55,15,-20,{x:.4,y:.2,z:-.3}],[48,22,15,{x:-.3,y:.5,z:.4}],[-30,28,40,{x:.6,y:0,z:.2}],[45,8,-35,{x:-.2,y:.8,z:-.5}],[-60,32,30,{x:.3,y:1.1,z:.3}]];
+            colDefs.forEach(([cx, cy, cz, tilt]) => {
+                const g = new THREE.Group();
+                g.add(new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.5, 9, 10), M.voidStone));
+                const cap = new THREE.Mesh(new THREE.BoxGeometry(3, .7, 3), M.voidStone); cap.position.y = 4.6; g.add(cap);
+                const cap2 = new THREE.Mesh(new THREE.BoxGeometry(3.6, .4, 3.6), M.magentaTrim); cap2.position.y = 4.95; g.add(cap2);
+                const brk = new THREE.Mesh(new THREE.ConeGeometry(1.2, 2, 5), M.voidStone); brk.position.y = -5.5; brk.rotation.x = Math.PI; g.add(brk);
+                g.position.set(cx, cy, cz); g.rotation.set(tilt.x, tilt.y, tilt.z);
+                g.userData = { baseY: cy, floatSpeed: .15 + Math.random() * .15, floatPhase: Math.random() * Math.PI * 2, rotSpeed: new THREE.Vector3(0, (Math.random() - .5) * .05, 0) };
+                scene.add(g); fragments.push(g);
+            });
+
+            // ── Void tentacles ────────────────────────────────────
+            const tentacles = [];
+            for (let i = 0; i < 8; i++) {
+                const a = (i / 8) * Math.PI * 2 + .25;
+                const r = 44 + Math.random() * 5;
+                const tx = Math.cos(a) * r, tz = Math.sin(a) * r;
+                if (Math.abs(tz - 55) < 25 && Math.abs(tx) < 15) continue;
+                const height = 4 + Math.random() * 4;
+                const wiggleSeed = Math.random() * 10;
+                const tg = new THREE.Group();
+                const pts = [];
+                for (let s = 0; s <= 12; s++) { const tt = s / 12; pts.push(new THREE.Vector3(Math.sin(tt * Math.PI * 1.2 + wiggleSeed) * 1.2 * tt, tt * height, Math.cos(tt * Math.PI * 1.4 + wiggleSeed) * 1.0 * tt)); }
+                const curve = new THREE.CatmullRomCurve3(pts);
+                tg.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 28, .6, 8, false), M.tentacle));
+                const tipPt = pts[pts.length - 1];
+                const tipMesh = new THREE.Mesh(new THREE.ConeGeometry(.21, .8, 8), M.tentacle);
+                tipMesh.position.copy(tipPt); const tang = curve.getTangent(1).normalize(); tipMesh.lookAt(tipPt.clone().add(tang)); tipMesh.rotateX(Math.PI / 2); tg.add(tipMesh);
+                for (let s = 2; s < 12; s += 3) { const node = new THREE.Mesh(new THREE.SphereGeometry(.18, 6, 6), new THREE.MeshBasicMaterial({ color: 0xff60e0 })); node.position.copy(pts[s]); tg.add(node); }
+                tg.position.set(tx, -1.4, tz);
+                tg.userData = { baseRotY: Math.random() * Math.PI * 2, sway: Math.random() * .3 + .1, phase: Math.random() * Math.PI * 2 };
+                tg.rotation.y = tg.userData.baseRotY;
+                scene.add(tg); tentacles.push(tg);
+            }
+
+            // ── Void eyes ─────────────────────────────────────────
+            const eyes = [];
+            const EYE_POS = [[-25,18,-15],[28,22,-10],[-15,28,30],[20,15,35],[-40,32,8],[35,38,12],[0,42,-25],[-8,24,52]];
+            EYE_POS.forEach(([ex, ey, ez]) => {
+                const g = new THREE.Group();
+                g.add(new THREE.Mesh(new THREE.SphereGeometry(.55, 16, 12), new THREE.MeshStandardMaterial({ color: 0x080010, roughness: .4, metalness: .3, emissive: 0x200030, emissiveIntensity: .3 })));
+                const iris = new THREE.Mesh(new THREE.SphereGeometry(.32, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff40d8 })); iris.position.z = .35; g.add(iris);
+                const pupil = new THREE.Mesh(new THREE.SphereGeometry(.13, 12, 8), new THREE.MeshBasicMaterial({ color: 0x000000 })); pupil.position.z = .55; g.add(pupil);
+                const haloMesh = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 2.4), new THREE.MeshBasicMaterial({ color: 0xff40e0, transparent: true, opacity: .35, depthWrite: false, blending: THREE.AdditiveBlending }));
+                haloMesh.position.z = .4; g.add(haloMesh);
+                g.position.set(ex, ey, ez);
+                g.userData = { halo: haloMesh, baseY: ey, floatSpeed: .3 + Math.random() * .3, phase: Math.random() * Math.PI * 2, wobble: .5 + Math.random() * .5 };
+                scene.add(g); eyes.push(g);
+            });
+
+            // ── Distant ruined spires ─────────────────────────────
+            for (let i = 0; i < 16; i++) {
+                const a = Math.random() * Math.PI * 2;
+                if (Math.abs(a - Math.PI / 2) < .5) continue;
+                const r = 130 + Math.random() * 70, h = 24 + Math.random() * 36;
+                const sg = new THREE.Group();
+                const main = new THREE.Mesh(new THREE.ConeGeometry(h * .18, h, 5), new THREE.MeshStandardMaterial({ color: 0x14062a, roughness: 1, emissive: 0x2a0a48, emissiveIntensity: .15 }));
+                main.position.y = h / 2 - 2; sg.add(main);
+                const stip = new THREE.Mesh(new THREE.ConeGeometry(h * .06, h * .18, 5), M.magentaTrim); stip.position.y = h - 2; sg.add(stip);
+                sg.position.set(Math.cos(a) * r, 0, Math.sin(a) * r); sg.rotation.z = (Math.random() - .5) * .15; scene.add(sg);
+            }
+
+            // ── Void particles ────────────────────────────────────
+            const PCOUNT = 1400;
+            const partGeo = new THREE.BufferGeometry();
+            const partPos = new Float32Array(PCOUNT * 3);
+            const partCol = new Float32Array(PCOUNT * 3);
+            const partVel = new Float32Array(PCOUNT * 3);
+            for (let i = 0; i < PCOUNT; i++) {
+                const a = Math.random() * Math.PI * 2, r = Math.random() * 120;
+                partPos[i*3] = Math.cos(a) * r; partPos[i*3+1] = Math.random() * 55; partPos[i*3+2] = Math.sin(a) * r;
+                const m = Math.random(); partCol[i*3] = .18 + m * .12; partCol[i*3+1] = .04 + m * .06; partCol[i*3+2] = .28 + m * .15;
+                partVel[i*3] = (Math.random() - .5) * .1; partVel[i*3+1] = .05 + Math.random() * .15; partVel[i*3+2] = (Math.random() - .5) * .1;
+            }
+            partGeo.setAttribute('position', new THREE.BufferAttribute(partPos, 3));
+            partGeo.setAttribute('color', new THREE.BufferAttribute(partCol, 3));
+            scene.add(new THREE.Points(partGeo, new THREE.PointsMaterial({ size: .55, vertexColors: true, transparent: true, opacity: .85, depthWrite: false, blending: THREE.NormalBlending })));
+
+            // ── Purple stars + nebula ─────────────────────────────
+            const starGeo = new THREE.BufferGeometry();
+            const starPos = new Float32Array(600 * 3);
+            for (let i = 0; i < 600; i++) { const a = Math.random() * Math.PI * 2, r = 200 + Math.random() * 60, phi = Math.random() * Math.PI; starPos[i*3] = Math.cos(a) * r * Math.sin(phi); starPos[i*3+1] = 20 + Math.random() * 120; starPos[i*3+2] = Math.sin(a) * r * Math.sin(phi); }
+            starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+            scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xe8a8ff, size: .7, transparent: true, opacity: .85, depthWrite: false })));
+            const nebula = new THREE.Mesh(new THREE.PlaneGeometry(700, 260), new THREE.MeshBasicMaterial({ color: 0x6020c0, transparent: true, opacity: .22, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+            nebula.position.set(0, 80, 210); scene.add(nebula);
+
+            vacioSystem = {
+                update(t) {
+                    // Fragments + shards + columns float/rotate
+                    for (const f of fragments) {
+                        f.position.y = f.userData.baseY + Math.sin(t * f.userData.floatSpeed + f.userData.floatPhase) * 1.2;
+                        f.rotation.x += f.userData.rotSpeed.x * .01;
+                        f.rotation.y += f.userData.rotSpeed.y * .01;
+                        f.rotation.z += f.userData.rotSpeed.z * .01;
+                    }
+                    // Tentacle sway
+                    for (const tn of tentacles) tn.rotation.y = tn.userData.baseRotY + Math.sin(t * tn.userData.sway + tn.userData.phase) * .18;
+                    // Eyes bob + face camera + halo pulse
+                    for (const e of eyes) {
+                        e.position.y = e.userData.baseY + Math.sin(t * e.userData.floatSpeed + e.userData.phase) * e.userData.wobble;
+                        e.lookAt(camera.position);
+                        e.userData.halo.material.opacity = .28 + Math.sin(t * 1.5 + e.userData.phase) * .15;
+                    }
+                    // Particles drift upward
+                    const arr = partGeo.attributes.position.array;
+                    for (let i = 0; i < PCOUNT; i++) {
+                        arr[i*3]   += partVel[i*3]   * .4 + Math.sin(t * .3 + i * .1) * .01;
+                        arr[i*3+1] += partVel[i*3+1] * .4;
+                        arr[i*3+2] += partVel[i*3+2] * .4;
+                        if (arr[i*3+1] > 60) { arr[i*3+1] = 0; const a = Math.random() * Math.PI * 2, r = Math.random() * 120; arr[i*3] = Math.cos(a) * r; arr[i*3+2] = Math.sin(a) * r; }
+                    }
+                    partGeo.attributes.position.needsUpdate = true;
+                    // Rift pulse
+                    riftCore.material.opacity  = .7  + Math.sin(t * 1.8) * .18;
+                    riftMid.material.opacity   = .4  + Math.sin(t * 1.3 + .5) * .1;
+                    riftOuter.material.opacity = .32 + Math.sin(t * .9 + 1) * .08;
+                    // Nebula shimmer
+                    nebula.material.opacity = .20 + Math.sin(t * .4) * .05;
+                }
+            };
+        }
+
+        function buildCumbresLavaArena() {
+            // ── Textures ──────────────────────────────────────────
+            function obsidianTex() {
+                const c = document.createElement('canvas'); c.width = c.height = 512;
+                const x = c.getContext('2d');
+                const g = x.createRadialGradient(256, 256, 40, 256, 256, 360);
+                g.addColorStop(0, '#1a0e0a'); g.addColorStop(.5, '#0c0604'); g.addColorStop(1, '#050202');
+                x.fillStyle = g; x.fillRect(0, 0, 512, 512);
+                for (let i = 0; i < 24; i++) {
+                    x.strokeStyle = `rgba(255,${80 + Math.random() * 100},${20 + Math.random() * 40},${Math.random() * .7 + .3})`;
+                    x.lineWidth = Math.random() * 1.6 + .5; x.shadowColor = '#ff6020'; x.shadowBlur = 4;
+                    x.beginPath(); let px = Math.random() * 512, py = Math.random() * 512; x.moveTo(px, py);
+                    for (let s = 0; s < 6; s++) { px += (Math.random() - .5) * 120; py += (Math.random() - .5) * 120; x.lineTo(px, py); }
+                    x.stroke();
+                }
+                x.shadowBlur = 0;
+                for (let i = 0; i < 280; i++) {
+                    x.fillStyle = `rgba(${100 + Math.random() * 40},${60 + Math.random() * 30},${40 + Math.random() * 30},${Math.random() * .4 + .1})`;
+                    x.fillRect(Math.random() * 512, Math.random() * 512, Math.random() * 2 + .4, Math.random() * 2 + .4);
+                }
+                const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; return t;
+            }
+            function lavaTex() {
+                const c = document.createElement('canvas'); c.width = c.height = 512;
+                const x = c.getContext('2d');
+                const g = x.createRadialGradient(256, 256, 30, 256, 256, 360);
+                g.addColorStop(0, '#fff6c0'); g.addColorStop(.3, '#ffae40'); g.addColorStop(.7, '#e84a18'); g.addColorStop(1, '#7a1808');
+                x.fillStyle = g; x.fillRect(0, 0, 512, 512);
+                for (let i = 0; i < 40; i++) {
+                    x.fillStyle = `rgba(20,8,4,${Math.random() * .55 + .2})`;
+                    x.beginPath(); x.ellipse(Math.random() * 512, Math.random() * 512, Math.random() * 45 + 10, Math.random() * 30 + 8, Math.random() * Math.PI, 0, Math.PI * 2); x.fill();
+                }
+                for (let i = 0; i < 140; i++) {
+                    x.fillStyle = `rgba(255,${200 + Math.random() * 55},${100 + Math.random() * 100},${Math.random() * .5 + .3})`;
+                    x.beginPath(); x.arc(Math.random() * 512, Math.random() * 512, Math.random() * 3 + .8, 0, Math.PI * 2); x.fill();
+                }
+                const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; return t;
+            }
+            function volcanicRockTex() {
+                const c = document.createElement('canvas'); c.width = c.height = 512;
+                const x = c.getContext('2d');
+                x.fillStyle = '#1a0e08'; x.fillRect(0, 0, 512, 512);
+                for (let i = 0; i < 280; i++) {
+                    const xx = Math.random() * 512, yy = Math.random() * 512, r = Math.random() * 44 + 8;
+                    x.fillStyle = `rgba(${30 + Math.random() * 40},${18 + Math.random() * 25},${10 + Math.random() * 15},${Math.random() * .4 + .15})`;
+                    x.beginPath(); x.ellipse(xx, yy, r, r * .7, Math.random() * Math.PI, 0, Math.PI * 2); x.fill();
+                }
+                for (let i = 0; i < 14; i++) {
+                    x.strokeStyle = `rgba(${200 + Math.random() * 55},${60 + Math.random() * 60},${20 + Math.random() * 30},${Math.random() * .5 + .2})`;
+                    x.lineWidth = Math.random() * 1.2 + .3; x.shadowColor = '#ff5020'; x.shadowBlur = 4;
+                    x.beginPath(); let px = Math.random() * 512, py = Math.random() * 512; x.moveTo(px, py);
+                    for (let s = 0; s < 5; s++) { px += (Math.random() - .5) * 140; py += (Math.random() - .5) * 140; x.lineTo(px, py); }
+                    x.stroke();
+                }
+                x.shadowBlur = 0;
+                const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(3, 3); t.colorSpace = THREE.SRGBColorSpace; return t;
+            }
+            const obsMap = obsidianTex(), lavaMap = lavaTex(), volcRockMap = volcanicRockTex();
+
+            // ── Materials ─────────────────────────────────────────
+            const Ml = {
+                emberTrim:    new THREE.MeshStandardMaterial({ color: 0xff8030, roughness: .4, metalness: .5, emissive: 0xff5010, emissiveIntensity: .85 }),
+                volcRock:     new THREE.MeshStandardMaterial({ map: volcRockMap, color: 0x2a1810, roughness: .95, metalness: .05, emissive: 0x401208, emissiveIntensity: .18 }),
+                obsidianBase: new THREE.MeshStandardMaterial({ map: obsMap, color: 0x140804, roughness: .55, metalness: .25, emissive: 0x301006, emissiveIntensity: .2 }),
+                lavaFlow:     new THREE.MeshStandardMaterial({ map: lavaMap, color: 0xffaa50, roughness: .45, emissive: 0xff5010, emissiveIntensity: 1.0 }),
+            };
+
+            // ── Pulsing point lights (kept for animation) ─────────
+            const lavaGlowPt = new THREE.PointLight(0xff6020, 45, 140);
+            lavaGlowPt.position.set(0, -3, 0); scene.add(lavaGlowPt);
+            const volcGlowPt = new THREE.PointLight(0xff4010, 63, 200);
+            volcGlowPt.position.set(0, 30, 140); scene.add(volcGlowPt);
+            const bigRiverL1 = new THREE.PointLight(0xff5020, 25, 80);
+            bigRiverL1.position.set(-40, 2, 80); scene.add(bigRiverL1);
+            const bigRiverL2 = new THREE.PointLight(0xff6030, 25, 80);
+            bigRiverL2.position.set(40, 2, 90); scene.add(bigRiverL2);
+
+            // ── Lava ocean ────────────────────────────────────────
+            const lavaOceanGeo = new THREE.PlaneGeometry(900, 900, 80, 80);
+            const lavaPos = lavaOceanGeo.attributes.position;
+            for (let i = 0; i < lavaPos.count; i++) {
+                const lx = lavaPos.getX(i), ly = lavaPos.getY(i), lr = Math.sqrt(lx * lx + ly * ly);
+                if (lr > 40) lavaPos.setZ(i, Math.sin(lx * .07) * Math.cos(ly * .07) * .6 + (Math.random() - .5) * .2);
+            }
+            lavaOceanGeo.computeVertexNormals();
+            const lavaOcean = new THREE.Mesh(lavaOceanGeo, new THREE.MeshStandardMaterial({ map: lavaMap, color: 0xff8848, roughness: .48, emissive: 0xff4010, emissiveIntensity: .75 }));
+            lavaOcean.rotation.x = -Math.PI / 2; lavaOcean.position.y = -3.5; scene.add(lavaOcean);
+
+            // ── Dark crust ring around platform ───────────────────
+            const crust = new THREE.Mesh(new THREE.RingGeometry(36, 55, 48, 1), new THREE.MeshStandardMaterial({ color: 0x100604, roughness: 1, emissive: 0x300806, emissiveIntensity: .15 }));
+            crust.rotation.x = -Math.PI / 2; crust.position.y = -2.3; scene.add(crust);
+
+            // ── Board plateau (volcanic obsidian) ─────────────────
+            const base2 = new THREE.Mesh(new THREE.CylinderGeometry(34, 36, 1.2, 48), Ml.volcRock);
+            base2.position.y = -1.0; scene.add(base2);
+            const base1 = new THREE.Mesh(new THREE.CylinderGeometry(31, 32, .8, 48), Ml.obsidianBase);
+            base1.position.y = .05; scene.add(base1);
+            const emberRing1 = new THREE.Mesh(new THREE.TorusGeometry(28.2, .32, 16, 72), Ml.emberTrim);
+            emberRing1.rotation.x = Math.PI / 2; emberRing1.position.y = .55; scene.add(emberRing1);
+            const emberRing2 = new THREE.Mesh(new THREE.TorusGeometry(22.5, .12, 12, 72), Ml.emberTrim);
+            emberRing2.rotation.x = Math.PI / 2; emberRing2.position.y = .58; scene.add(emberRing2);
+
+            // ── Rocky volcanic mountains ──────────────────────────
+            function rockMountain(mx, mz, h, scaleX) {
+                scaleX = scaleX || 1;
+                const g = new THREE.Group();
+                const baseGeo = new THREE.ConeGeometry(h * .7 * scaleX, h, 7 + Math.floor(Math.random() * 3));
+                const bp = baseGeo.attributes.position;
+                for (let i = 0; i < bp.count; i++) {
+                    if (bp.getY(i) < h / 2 - .5) {
+                        const f = .85 + Math.random() * .4;
+                        bp.setX(i, bp.getX(i) * f); bp.setZ(i, bp.getZ(i) * f);
+                    }
+                }
+                baseGeo.computeVertexNormals();
+                const baseMesh = new THREE.Mesh(baseGeo, Ml.volcRock);
+                baseMesh.position.y = h / 2 - 1; g.add(baseMesh);
+                if (Math.random() < .6) {
+                    const vein = new THREE.Mesh(new THREE.BoxGeometry(.3, h * .55, .3), Ml.lavaFlow);
+                    const a = Math.random() * Math.PI * 2;
+                    vein.position.set(Math.cos(a) * h * .35 * scaleX, h * .4, Math.sin(a) * h * .35 * scaleX);
+                    vein.rotation.z = (Math.random() - .5) * .4; g.add(vein);
+                }
+                if (Math.random() < .5) {
+                    const peak = new THREE.Mesh(new THREE.ConeGeometry(h * .18, h * .35, 6), Ml.volcRock);
+                    peak.position.set((Math.random() - .5) * h * .2, h + h * .1, 0);
+                    peak.rotation.z = (Math.random() - .5) * .25; g.add(peak);
+                }
+                const crack = new THREE.Mesh(new THREE.SphereGeometry(.7, 8, 6), Ml.lavaFlow);
+                crack.position.set((Math.random() - .5) * 3, .6, (Math.random() - .5) * 3);
+                crack.scale.set(1.5 + Math.random(), .4, .4 + Math.random()); g.add(crack);
+                g.position.set(mx, 0, mz); g.rotation.y = Math.random() * Math.PI * 2;
+                return g;
+            }
+            scene.add(rockMountain(-20, 150, 65, 1.6));
+            scene.add(rockMountain(35, 140, 55, 1.4));
+            scene.add(rockMountain(0, 175, 75, 1.8));
+            scene.add(rockMountain(-55, 120, 42, 1.2));
+            scene.add(rockMountain(60, 115, 48, 1.3));
+
+            // ── Radial lava rivers around platform ────────────────
+            function lavaRiver(startA, endA, r1, r2) {
+                const pts = [];
+                for (let i = 0; i <= 20; i++) {
+                    const t = i / 20, a = startA + (endA - startA) * t, r = r1 + (r2 - r1) * t;
+                    pts.push(new THREE.Vector3(Math.cos(a) * r, -2.6 + Math.sin(t * Math.PI * 3) * .3, Math.sin(a) * r));
+                }
+                return new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 40, 1.4, 8, false), Ml.lavaFlow);
+            }
+            scene.add(lavaRiver(0.2, 1.6, 60, 38));
+            scene.add(lavaRiver(2.4, 3.6, 55, 36));
+            scene.add(lavaRiver(4.2, 5.4, 65, 38));
+            scene.add(lavaRiver(5.8, 0.0, 58, 40));
+
+            // ── Big back lava river ───────────────────────────────
+            const bigRiverPts = [];
+            for (let i = 0; i <= 24; i++) {
+                const t = i / 24;
+                bigRiverPts.push(new THREE.Vector3(-100 + t * 200, -2.5 + Math.sin(t * Math.PI * 4) * .4, 70 + Math.sin(t * Math.PI * 2.5) * 18 + t * 30));
+            }
+            scene.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(bigRiverPts), 80, 3.2, 10, false), Ml.lavaFlow));
+
+            // ── Dragon skull on the ground ────────────────────────
+            const skullG = new THREE.Group();
+            const skullMat = new THREE.MeshStandardMaterial({ color: 0xb8a890, roughness: .85 });
+            const skullBase = new THREE.Mesh(new THREE.SphereGeometry(2.4, 14, 10), skullMat);
+            skullBase.scale.set(1, .85, 1.7); skullG.add(skullBase);
+            for (const side of [-1, 1]) {
+                const eye = new THREE.Mesh(new THREE.SphereGeometry(.5, 8, 6), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+                eye.position.set(side * .9, .3, 1.6); skullG.add(eye);
+                const horn = new THREE.Mesh(new THREE.ConeGeometry(.32, 2.4, 6), new THREE.MeshStandardMaterial({ color: 0x0a0402, roughness: .5 }));
+                horn.position.set(side * 1.2, 1.5, -1); horn.rotation.z = side * -.3; horn.rotation.x = -.6; skullG.add(horn);
+            }
+            const jaw = new THREE.Mesh(new THREE.SphereGeometry(2.2, 12, 8), skullMat);
+            jaw.scale.set(1, .4, 1.6); jaw.position.set(0, -1.3, 1.2); skullG.add(jaw);
+            skullG.position.set(-30, -2.4, -32); skullG.rotation.y = .6; skullG.scale.setScalar(1.6);
+            scene.add(skullG);
+
+            // ── Distant volcanoes ─────────────────────────────────
+            function volcano(vx, vz, h) {
+                const g = new THREE.Group();
+                const main = new THREE.Mesh(new THREE.ConeGeometry(h * .7, h, 8), new THREE.MeshStandardMaterial({ color: 0x180a06, roughness: 1, emissive: 0x401208, emissiveIntensity: .18 }));
+                main.position.y = h / 2 - 3; g.add(main);
+                const cap = new THREE.Mesh(new THREE.ConeGeometry(h * .18, h * .15, 8), Ml.lavaFlow);
+                cap.position.y = h - 3; g.add(cap);
+                g.position.set(vx, 0, vz); return g;
+            }
+            for (let i = 0; i < 10; i++) {
+                const a = Math.random() * Math.PI * 2;
+                if (Math.abs(a - Math.PI / 2) < .4) continue;
+                const r = 140 + Math.random() * 60, h = 30 + Math.random() * 40;
+                scene.add(volcano(Math.cos(a) * r, Math.sin(a) * r, h));
+            }
+            scene.add(volcano(-90, 180, 80));
+
+            // ── Embers (rising sparks) ─────────────────────────────
+            const EMBER_COUNT = 900;
+            const emberGeo = new THREE.BufferGeometry();
+            const ePos = new Float32Array(EMBER_COUNT * 3), eCol = new Float32Array(EMBER_COUNT * 3), eVel = new Float32Array(EMBER_COUNT);
+            for (let i = 0; i < EMBER_COUNT; i++) {
+                const a = Math.random() * Math.PI * 2, r = Math.random() * 120;
+                ePos[i*3] = Math.cos(a) * r; ePos[i*3+1] = Math.random() * 60; ePos[i*3+2] = Math.sin(a) * r;
+                const m = Math.random(); eCol[i*3] = 1.0; eCol[i*3+1] = .45 + m * .45; eCol[i*3+2] = .05 + m * .15;
+                eVel[i] = .18 + Math.random() * .4;
+            }
+            emberGeo.setAttribute('position', new THREE.BufferAttribute(ePos, 3));
+            emberGeo.setAttribute('color', new THREE.BufferAttribute(eCol, 3));
+            scene.add(new THREE.Points(emberGeo, new THREE.PointsMaterial({ size: .45, vertexColors: true, transparent: true, opacity: .95, depthWrite: false, blending: THREE.AdditiveBlending })));
+
+            // ── Ash (slow falling grey) ───────────────────────────
+            const ASH_COUNT = 700;
+            const ashGeo = new THREE.BufferGeometry();
+            const aPos = new Float32Array(ASH_COUNT * 3), aVel = new Float32Array(ASH_COUNT);
+            for (let i = 0; i < ASH_COUNT; i++) {
+                aPos[i*3] = (Math.random() - .5) * 240; aPos[i*3+1] = Math.random() * 70; aPos[i*3+2] = (Math.random() - .5) * 240;
+                aVel[i] = .08 + Math.random() * .15;
+            }
+            ashGeo.setAttribute('position', new THREE.BufferAttribute(aPos, 3));
+            scene.add(new THREE.Points(ashGeo, new THREE.PointsMaterial({ color: 0xa89888, size: .45, transparent: true, opacity: .55, depthWrite: false })));
+
+            cumbresLavaSystem = {
+                update(t) {
+                    // Embers rise
+                    const ea = emberGeo.attributes.position.array;
+                    for (let i = 0; i < EMBER_COUNT; i++) {
+                        ea[i*3+1] += eVel[i] * .4;
+                        ea[i*3]   += Math.sin(t * .8 + i * .3) * .05;
+                        ea[i*3+2] += Math.cos(t * .6 + i * .2) * .05;
+                        if (ea[i*3+1] > 70) {
+                            ea[i*3+1] = -2;
+                            const a = Math.random() * Math.PI * 2, r = Math.random() * 120;
+                            ea[i*3] = Math.cos(a) * r; ea[i*3+2] = Math.sin(a) * r;
+                        }
+                    }
+                    emberGeo.attributes.position.needsUpdate = true;
+                    // Ash falls
+                    const aa = ashGeo.attributes.position.array;
+                    for (let i = 0; i < ASH_COUNT; i++) {
+                        aa[i*3+1] -= aVel[i] * .5;
+                        aa[i*3]   += Math.sin(t * .3 + i * .2) * .04;
+                        if (aa[i*3+1] < -3) {
+                            aa[i*3+1] = 70 + Math.random() * 15;
+                            aa[i*3]   = (Math.random() - .5) * 240;
+                            aa[i*3+2] = (Math.random() - .5) * 240;
+                        }
+                    }
+                    ashGeo.attributes.position.needsUpdate = true;
+                    // Lava UV scroll
+                    if (lavaMap.offset) { lavaMap.offset.x = t * .025; lavaMap.offset.y = t * .015; }
+                    // Pulsing glow
+                    lavaGlowPt.intensity = 39 + Math.sin(t * 1.5) * 8;
+                    volcGlowPt.intensity = 56 + Math.sin(t * 1.1) * 11;
+                }
+            };
         }
 
         function buildProceduralArena(type) {
@@ -2115,14 +3146,21 @@
             // Determine which skin to use
             let skinId;
 
-            if (color === 'white') {
+            if (gameMode === 'multiplayer') {
+                // PvP: each player uses their own selected skin, not the coliseum boss
+                // color === multiplayerColor → your own pieces → urlArmySkin
+                // color !== multiplayerColor → opponent's pieces → urlOpponentSkin
+                skinId = (color === multiplayerColor)
+                    ? (urlArmySkin || 'orcos')
+                    : (urlOpponentSkin || 'orcos');
+            } else if (color === 'white') {
                 skinId = urlArmySkin || 'orcos';
             } else {
-                // Enemy skin based on coliseum — try both raw and normalized IDs
+                // PvE: enemy skin determined by coliseum boss
                 const rawId = (urlColiseumId || '').toLowerCase();
                 const normalizedId = rawId.replace(/-/g, ' ');
                 const enemySkin = ENEMY_SKIN_MAP[rawId] || ENEMY_SKIN_MAP[normalizedId];
-                skinId = enemySkin || 'humanos'; // Default enemy = humanos
+                skinId = enemySkin || 'humanos';
             }
 
             // Check if this skin has a GLB model for this piece type
@@ -2136,24 +3174,27 @@
                 modelPath = baseModels ? baseModels[type] : null;
             }
 
+            // La pieza existe LÓGICAMENTE desde ya (placeholder inmediato).
+            // Antes se añadía al terminar la descarga del GLB, y un movimiento
+            // del rival podía llegar antes de que la pieza "existiera" → desync.
+            placeholderPiece(p, type, color, skinId);
+
             if (modelPath) {
-                // Load GLB model
+                // Capture generation so stale async callbacks don't swap old-skin meshes
+                const myGen = pieceLoadGeneration;
                 loadGLBPiece(p, modelPath, color, (loadedMesh) => {
-                    if (loadedMesh) {
-                        p.modelScale = 1; // GLB pieces are already at correct scale
-                        setPos(p, false, loadedMesh);
-                        p.mesh = loadedMesh;
-                        loadedMesh.userData = { type: 'piece', pieceData: p };
-                        scene.add(loadedMesh);
-                        pieces.push(p);
-                    } else {
-                        // Fallback to placeholder on load error
-                        placeholderPiece(p, type, color, skinId);
-                    }
+                    if (myGen !== pieceLoadGeneration) return; // Batch was invalidated, discard
+                    if (!loadedMesh) return;                   // Falló la carga: queda el placeholder
+                    if (!pieces.includes(p)) return;           // La pieza ya fue capturada
+                    scene.remove(p.mesh);
+                    p.modelScale = 1;
+                    setPos(p, false, loadedMesh);
+                    // Si está en mitad de una animación, no teletransportar el mesh nuevo
+                    if (p.isMoving || p.isFighting) loadedMesh.position.copy(p.mesh.position);
+                    p.mesh = loadedMesh;
+                    loadedMesh.userData = { type: 'piece', pieceData: p };
+                    scene.add(loadedMesh);
                 });
-            } else {
-                // No GLB for this piece type, use placeholder
-                placeholderPiece(p, type, color, skinId);
             }
         }
 
@@ -2178,90 +3219,22 @@
             if (anim) { p.isMoving = true; p.isFighting = false; p.startPos = m.position.clone(); p.targetPos = new THREE.Vector3(tx, ty, tz); p.prog = 0; p.hops = Math.max(1, Math.round(p.startPos.distanceTo(p.targetPos) / SZ)); }
             else m.position.set(tx, ty, tz);
         }
+        // Lookup VISUAL: encuentra el actor 3D en una casilla.
+        // (Las reglas no usan esto; viven en el motor — engine.pieceAt)
         function pieceAt(x, z) { return pieces.find(p => p.x === x && p.z === z) }
-        function getMoves(p) {
-            const mv = []; const { x, z, color } = p; const d = color === 'white' ? 1 : -1;
-            function tryAdd(nx, nz, cap = true, mustCap = false) { if (nx < 0 || nx > 7 || nz < 0 || nz > 7) return false; const t = pieceAt(nx, nz); if (t) { if (cap && t.color !== color) mv.push({ x: nx, z: nz }); return false; } if (!mustCap) mv.push({ x: nx, z: nz }); return true; }
-            function slide(dx, dz) { let nx = x + dx, nz = z + dz; while (tryAdd(nx, nz)) { nx += dx; nz += dz; } }
-            switch (p.type) {
-                case 'pawn': if (tryAdd(x, z + d, false)) { if ((color === 'white' && z === 1) || (color === 'black' && z === 6)) tryAdd(x, z + d * 2, false); } if (pieceAt(x - 1, z + d)?.color !== color && pieceAt(x - 1, z + d)) tryAdd(x - 1, z + d, true, true); if (pieceAt(x + 1, z + d)?.color !== color && pieceAt(x + 1, z + d)) tryAdd(x + 1, z + d, true, true); break;
-                case 'knight': [[1, 2], [2, 1], [-1, 2], [-2, 1], [1, -2], [2, -1], [-1, -2], [-2, -1]].forEach(j => tryAdd(x + j[0], z + j[1])); break;
-                case 'bishop': slide(1, 1); slide(-1, 1); slide(1, -1); slide(-1, -1); break;
-                case 'rook': slide(1, 0); slide(-1, 0); slide(0, 1); slide(0, -1); break;
-                case 'queen': slide(1, 1); slide(-1, 1); slide(1, -1); slide(-1, -1); slide(1, 0); slide(-1, 0); slide(0, 1); slide(0, -1); break;
-                case 'king': [[1, 1], [1, 0], [1, -1], [0, 1], [0, -1], [-1, 1], [-1, 0], [-1, -1]].forEach(s => tryAdd(x + s[0], z + s[1])); break;
-            }return mv;
-        }
 
-        // ─── CHECK / CHECKMATE LOGIC ─────────────
-        // Check if a square is attacked by any piece of 'byColor'
-        function isSquareAttacked(tx, tz, byColor) {
-            for (const p of pieces) {
-                if (p.color !== byColor) continue;
-                const moves = getMoves(p);
-                if (moves.some(m => m.x === tx && m.z === tz)) return true;
+        // Movimientos legales para resaltar en la UI: pregunta al motor y
+        // colapsa las 4 variantes de promoción en una sola casilla destino.
+        function legalTargetsFor(x, z) {
+            const seen = new Set();
+            const targets = [];
+            for (const m of engine.movesFor(x, z)) {
+                const key = m.toX + ',' + m.toZ;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                targets.push({ x: m.toX, z: m.toZ, isCapture: !!m.isCapture });
             }
-            return false;
-        }
-
-        // Check if the king of 'color' is currently in check
-        function isInCheck(color) {
-            const king = pieces.find(p => p.type === 'king' && p.color === color);
-            if (!king) return false;
-            const enemyColor = color === 'white' ? 'black' : 'white';
-            return isSquareAttacked(king.x, king.z, enemyColor);
-        }
-
-        // Get legal moves for a piece (filters out moves that leave own king in check)
-        function getLegalMoves(piece) {
-            const rawMoves = getMoves(piece);
-            const legalMoves = [];
-            for (const move of rawMoves) {
-                // Simulate the move
-                const origX = piece.x;
-                const origZ = piece.z;
-                const captured = pieceAt(move.x, move.z);
-
-                // Temporarily apply the move
-                piece.x = move.x;
-                piece.z = move.z;
-                if (captured) {
-                    const idx = pieces.indexOf(captured);
-                    if (idx !== -1) pieces.splice(idx, 1);
-                }
-
-                // Check if own king is in check after this move
-                const inCheck = isInCheck(piece.color);
-
-                // Revert the move
-                piece.x = origX;
-                piece.z = origZ;
-                if (captured) pieces.push(captured);
-
-                if (!inCheck) legalMoves.push(move);
-            }
-            return legalMoves;
-        }
-
-        // Check if 'color' is in checkmate (in check and no legal moves)
-        function isCheckmate(color) {
-            if (!isInCheck(color)) return false;
-            // Check if any piece of this color has a legal move
-            for (const p of pieces) {
-                if (p.color !== color) continue;
-                if (getLegalMoves(p).length > 0) return false;
-            }
-            return true;
-        }
-
-        // Check if 'color' is in stalemate (not in check but no legal moves)
-        function isStalemate(color) {
-            if (isInCheck(color)) return false;
-            for (const p of pieces) {
-                if (p.color !== color) continue;
-                if (getLegalMoves(p).length > 0) return false;
-            }
-            return true;
+            return targets;
         }
 
         // ─── HIGHLIGHTS ───────────────────────────
@@ -2270,7 +3243,7 @@
         function showHL(moves, piece) {
             clearHL();
             moves.forEach(m => {
-                const hasEnemy = pieceAt(m.x, m.z);
+                const hasEnemy = m.isCapture || pieceAt(m.x, m.z);
                 const px = (m.x - 3.5) * SZ, pz = (m.z - 3.5) * SZ;
                 // Dark border ring for contrast on white squares
                 const border = new THREE.Mesh(new THREE.CylinderGeometry(SZ / 2.2, SZ / 2.2, 0.15, 16), M.hlBorder);
@@ -2285,11 +3258,11 @@
 
         // ─── INPUT ────────────────────────────────
         function onClick(e) {
-            if (animating) return;
+            if (animating || gameOver) return;
             // Block clicks during AI's turn
-            if (gameMode === 'ai' && turn === 'black') return;
+            if (gameMode === 'ai' && engine.turn === 'black') return;
             // Block clicks when it's not your turn in multiplayer
-            if (gameMode === 'multiplayer' && turn !== multiplayerColor) return;
+            if (gameMode === 'multiplayer' && engine.turn !== multiplayerColor) return;
             mouse.x = (e.clientX / innerWidth) * 2 - 1; mouse.y = -(e.clientY / innerHeight) * 2 + 1;
             raycaster.setFromCamera(mouse, camera);
             const hits = raycaster.intersectObjects(scene.children, true);
@@ -2297,12 +3270,12 @@
             let cp = null, tmp = hits[0].object;
             while (tmp) { if (tmp.userData?.type === 'piece') { cp = tmp.userData.pieceData; break; } tmp = tmp.parent; }
             if (cp) {
-                if (cp.color === turn) selectP(cp);
-                else if (selectedPiece && validMoves.some(m => m.x === cp.x && m.z === cp.z)) doMove(selectedPiece, cp.x, cp.z);
+                if (cp.color === engine.turn) selectP(cp);
+                else if (selectedPiece && validMoves.some(m => m.x === cp.x && m.z === cp.z)) attemptMove(selectedPiece, cp.x, cp.z);
             } else {
                 const sq = hits.find(i => i.object.userData?.type === 'square');
                 if (sq && selectedPiece && validMoves.some(m => m.x === sq.object.userData.x && m.z === sq.object.userData.z))
-                    doMove(selectedPiece, sq.object.userData.x, sq.object.userData.z);
+                    attemptMove(selectedPiece, sq.object.userData.x, sq.object.userData.z);
             }
         }
         function selectP(p) {
@@ -2313,306 +3286,227 @@
             selectedPiece = p;
             const ps = p.modelScale || SC;
             p.mesh.scale.set(ps * 1.15, ps * 1.15, ps * 1.15);
-            validMoves = getLegalMoves(p); showHL(validMoves, p);
+            validMoves = legalTargetsFor(p.x, p.z); showHL(validMoves, p);
             document.getElementById('status').innerText = `⚔ ${p.type.toUpperCase()} seleccionado`;
         }
-        function doMove(p, nx, nz, isRemote = false) {
-            animating = true;
-            const fromX = p.x;
-            const fromZ = p.z;
-            const target = pieces.find(t => t.x === nx && t.z === nz && t !== p);
-            p.x = nx; p.z = nz; p.targetEnemy = target;
-            setPos(p, true);
-            const rs = p.modelScale || SC;
-            p.mesh.scale.set(rs, rs, rs); selectedPiece = null; clearHL(); validMoves = [];
-            document.getElementById('status').innerText = target ? '⚔ ¡Combate!' : '⚔ Moviendo...';
 
-            // Send move to server in multiplayer mode (only for local player's moves)
+        // Paso 1: intención del jugador local. Si hay coronación,
+        // primero se elige la pieza (modal) y DESPUÉS se confirma el
+        // movimiento — así la elección viaja junto al movimiento (PvP).
+        function attemptMove(p, nx, nz) {
+            if (engine.needsPromotion(p.x, p.z, nx, nz)) {
+                pendingPromotion = { fromX: p.x, fromZ: p.z, toX: nx, toZ: nz };
+                const modal = document.getElementById('promotion-modal');
+                modal.classList.remove('hidden');
+                modal.style.display = 'flex';
+                return;
+            }
+            commitMove({ fromX: p.x, fromZ: p.z, toX: nx, toZ: nz });
+        }
+
+        // Paso 2: el MOTOR valida y aplica. Solo si lo aprueba, la UI anima.
+        function commitMove(m, isRemote = false) {
+            const rec = engine.makeMove(m);
+            if (!rec) {
+                console.warn('♟ Movimiento rechazado por el motor:', m);
+                if (isRemote && typeof window.requestServerSync === 'function') {
+                    // El rival mandó algo que nuestro estado no acepta → resincronizar
+                    window.requestServerSync();
+                }
+                animating = false;
+                return null;
+            }
             if (gameMode === 'multiplayer' && !isRemote && typeof window.sendMoveToServer === 'function') {
                 window.sendMoveToServer({
-                    type: p.type,
-                    color: p.color,
-                    fromX, fromZ,
-                    toX: nx, toZ: nz
+                    type: rec.type,
+                    color: rec.color,
+                    fromX: rec.fromX, fromZ: rec.fromZ,
+                    toX: rec.toX, toZ: rec.toZ,
+                    promotion: rec.promotion
                 });
             }
+            animateMove(rec);
+            return rec;
         }
-        function endTurn(cap = false) {
-            turn = turn === 'white' ? 'black' : 'white';
-            const ti = document.getElementById('turn-indicator');
-            const st = document.getElementById('status');
-            const turnName = turn === 'white' ? 'Blancas' : 'Negras';
 
-            // Check for checkmate
-            if (isCheckmate(turn)) {
-                const winnerText = turn === 'white' ? 'Negras' : 'Blancas';
-                const winnerId = turn === 'white' ? 'black' : 'white';
-                ti.innerText = `👑 ¡JAQUE MATE!`;
-                ti.style.background = 'linear-gradient(135deg, #ff6600, #ff0000)';
-                st.innerText = `🏆 ¡${winnerText} GANAN! ¡Jaque Mate!`;
-                animating = true; // Block further moves
-                document.getElementById('reset-btn').style.display = 'inline-block';
+        // Paso 3: la UI 3D actúa lo que el motor ya decidió.
+        function animateMove(rec) {
+            animating = true;
+            if (selectedPiece) {
+                const s = selectedPiece.modelScale || SC;
+                selectedPiece.mesh.scale.set(s, s, s);
+            }
+            selectedPiece = null; clearHL(); validMoves = [];
+
+            const p = pieces.find(v => v.x === rec.fromX && v.z === rec.fromZ);
+            if (!p) {
+                // Los actores 3D perdieron el hilo (no debería pasar): reconstruir del motor
+                console.warn('♟ Actor 3D no encontrado, reconstruyendo visuales');
+                rebuildVisualsFromEngine();
+                finishMove(rec);
+                return;
+            }
+            const target = rec.captured
+                ? pieces.find(v => v.x === rec.captured.x && v.z === rec.captured.z && v !== p)
+                : null;
+
+            p.x = rec.toX; p.z = rec.toZ;
+            p.moveRecord = rec;
+            p.targetEnemy = target || null;
+            setPos(p, true);
+
+            // Enroque: la torre también se desliza (sin combate)
+            if (rec.rookMove) {
+                const rook = pieces.find(v => v.x === rec.rookMove.fromX && v.z === rec.rookMove.fromZ);
+                if (rook) {
+                    rook.x = rec.rookMove.toX; rook.z = rec.rookMove.toZ;
+                    rook.moveRecord = null; rook.targetEnemy = null;
+                    setPos(rook, true);
+                }
+            }
+            document.getElementById('status').innerText = target ? '⚔ ¡Combate!' : '⚔ Moviendo...';
+        }
+
+        // Paso 4: la animación terminó — actualizar mesh de coronación y cerrar el turno.
+        function finishMovePiece(p) {
+            const rec = p.moveRecord;
+            p.moveRecord = null;
+            if (rec && rec.promotion) promotePiece(p, rec.promotion);
+            finishMove(rec);
+        }
+
+        function finishMove(rec) {
+            updateStatusUI(rec);
+            const status = rec && rec.status ? rec.status : engine.getStatus();
+
+            if (status.over) {
+                gameOver = true;
+                document.getElementById('reset-btn').style.display = gameMode === 'multiplayer' ? 'none' : 'inline-block';
                 document.getElementById('return-world-btn').style.display = 'inline-block';
 
-                // Coliseum Victory Reward
-                if (winnerId === 'white' && urlColiseumId && gameMode === 'ai') {
+                // Recompensa de coliseo (victoria del jugador blanco contra la IA)
+                if (status.state === 'checkmate' && status.winner === 'white' && urlColiseumId && gameMode === 'ai') {
+                    const coliseumNorm = urlColiseumId.toLowerCase().replace(/-/g, ' ');
                     const mapping = {
                         'estadio verde': 'verde',
-                        'bosque': 'verde',
                         'hielo': 'blanca',
-                        'desierto': 'amarilla',
-                        'volcan': 'lava',
-                        'cementerio': 'negra'
+                        'cementerio': 'Dimensius',
+                        'volcan': 'alanegra',
                     };
-                    const rewardSkin = mapping[urlColiseumId] || false;
+                    const rewardSkin = mapping[coliseumNorm] || false;
                     if (rewardSkin) {
                         window.pendingRewardSkin = rewardSkin;
                         setTimeout(() => {
-                            alert(`¡Victoria Magistral! Has desbloqueado la skin: ${rewardSkin.toUpperCase()}`);
-                        }, 500);
+                            alert(`¡Victoria Magistral! 🏆\n\nHas desbloqueado el ejército: ${rewardSkin.toUpperCase()}\n\nHaz clic en OK para volver al mundo y recibir tu recompensa.`);
+                            returnToWorld();
+                        }, 1000);
+                    } else {
+                        setTimeout(() => {
+                            alert('¡Victoria Magistral! 🏆\n\nRegresando al mundo...');
+                            returnToWorld();
+                        }, 1000);
                     }
                 }
-
-                // MULTIPLAYER: Send Result
-                if (gameMode === 'multiplayer' && typeof window.sendGameOverToServer === 'function') {
-                    window.sendGameOverToServer('checkmate', winnerId);
-                }
+                // En multiplayer el SERVIDOR es quien anuncia el resultado oficial
+                // (validó cada movimiento); aquí solo mostramos el estado local.
                 return;
-            }
-
-            // Check for stalemate
-            if (isStalemate(turn)) {
-                ti.innerText = `🤝 TABLAS`;
-                ti.style.background = 'linear-gradient(135deg, #888888, #555555)';
-                st.innerText = `🤝 ¡Tablas por ahogado! No hay movimientos legales.`;
-                animating = true; // Block further moves
-                document.getElementById('reset-btn').style.display = 'inline-block';
-
-                // MULTIPLAYER: Send Result
-                if (gameMode === 'multiplayer' && typeof window.sendGameOverToServer === 'function') {
-                    window.sendGameOverToServer('stalemate', 'draw');
-                }
-                return;
-            }
-
-            // Check if the current player is in check
-            if (isInCheck(turn)) {
-                ti.className = turn;
-                ti.innerText = `⚠️ ¡JAQUE! Turno: ${turnName}`;
-                ti.style.background = 'linear-gradient(135deg, #ff4444, #cc0000)';
-                st.innerText = cap ? `💀 ¡Baja! ⚠️ ¡${turnName} en JAQUE!` : `⚠️ ¡${turnName} en JAQUE!`;
-            } else {
-                ti.className = turn;
-                ti.innerText = `⚔ Turno: ${turnName}`;
-                ti.style.background = '';  // Reset to default
-                st.innerText = cap ? `💀 ¡Baja! Turno: ${turnName}` : `Turno: ${turnName}`;
             }
 
             animating = false;
 
-            // Trigger AI move if it's AI's turn
-            if (gameMode === 'ai' && turn === 'black' && !aiThinking) {
-                aiThinking = true;
-                animating = true;
-                document.getElementById('status').innerText = '🤖 La IA está pensando...';
-                makeAIMove(); // This is now async using Web Worker
+            // Movimientos del rival que llegaron mientras animábamos
+            if (remoteMoveQueue.length > 0) {
+                const queued = remoteMoveQueue.shift();
+                commitMove(queued, true);
+                return;
+            }
+
+            // Turno de la IA
+            if (gameMode === 'ai' && engine.turn === 'black' && !aiThinking) {
+                makeAIMove();
             }
         }
 
-        // ─── AI ENGINE ────────────────────────────
-        const PIECE_VALUES = { pawn: 100, knight: 320, bishop: 330, rook: 500, queen: 900, king: 20000 };
+        function updateStatusUI(rec) {
+            const ti = document.getElementById('turn-indicator');
+            const st = document.getElementById('status');
+            const status = rec && rec.status ? rec.status : engine.getStatus();
+            const turnName = engine.turn === 'white' ? 'Blancas' : 'Negras';
+            const cap = !!(rec && rec.captured);
 
-        // Positional bonus tables (from white's perspective, mirrored for black)
-        const POS_TABLES = {
-            pawn: [
-                [0, 0, 0, 0, 0, 0, 0, 0],
-                [50, 50, 50, 50, 50, 50, 50, 50],
-                [10, 10, 20, 30, 30, 20, 10, 10],
-                [5, 5, 10, 25, 25, 10, 5, 5],
-                [0, 0, 0, 20, 20, 0, 0, 0],
-                [5, -5, -10, 0, 0, -10, -5, 5],
-                [5, 10, 10, -20, -20, 10, 10, 5],
-                [0, 0, 0, 0, 0, 0, 0, 0]
-            ],
-            knight: [
-                [-50, -40, -30, -30, -30, -30, -40, -50],
-                [-40, -20, 0, 0, 0, 0, -20, -40],
-                [-30, 0, 10, 15, 15, 10, 0, -30],
-                [-30, 5, 15, 20, 20, 15, 5, -30],
-                [-30, 0, 15, 20, 20, 15, 0, -30],
-                [-30, 5, 10, 15, 15, 10, 5, -30],
-                [-40, -20, 0, 5, 5, 0, -20, -40],
-                [-50, -40, -30, -30, -30, -30, -40, -50]
-            ],
-            bishop: [
-                [-20, -10, -10, -10, -10, -10, -10, -20],
-                [-10, 0, 0, 0, 0, 0, 0, -10],
-                [-10, 0, 10, 10, 10, 10, 0, -10],
-                [-10, 5, 5, 10, 10, 5, 5, -10],
-                [-10, 0, 10, 10, 10, 10, 0, -10],
-                [-10, 10, 10, 10, 10, 10, 10, -10],
-                [-10, 5, 0, 0, 0, 0, 5, -10],
-                [-20, -10, -10, -10, -10, -10, -10, -20]
-            ],
-            rook: [
-                [0, 0, 0, 0, 0, 0, 0, 0],
-                [5, 10, 10, 10, 10, 10, 10, 5],
-                [-5, 0, 0, 0, 0, 0, 0, -5],
-                [-5, 0, 0, 0, 0, 0, 0, -5],
-                [-5, 0, 0, 0, 0, 0, 0, -5],
-                [-5, 0, 0, 0, 0, 0, 0, -5],
-                [-5, 0, 0, 0, 0, 0, 0, -5],
-                [0, 0, 0, 5, 5, 0, 0, 0]
-            ],
-            queen: [
-                [-20, -10, -10, -5, -5, -10, -10, -20],
-                [-10, 0, 0, 0, 0, 0, 0, -10],
-                [-10, 0, 5, 5, 5, 5, 0, -10],
-                [-5, 0, 5, 5, 5, 5, 0, -5],
-                [0, 0, 5, 5, 5, 5, 0, -5],
-                [-10, 5, 5, 5, 5, 5, 0, -10],
-                [-10, 0, 5, 0, 0, 0, 0, -10],
-                [-20, -10, -10, -5, -5, -10, -10, -20]
-            ],
-            king: [
-                [-30, -40, -40, -50, -50, -40, -40, -30],
-                [-30, -40, -40, -50, -50, -40, -40, -30],
-                [-30, -40, -40, -50, -50, -40, -40, -30],
-                [-30, -40, -40, -50, -50, -40, -40, -30],
-                [-20, -30, -30, -40, -40, -30, -30, -20],
-                [-10, -20, -20, -20, -20, -20, -20, -10],
-                [20, 20, 0, 0, 0, 0, 20, 20],
-                [20, 30, 10, 0, 0, 10, 30, 20]
-            ]
-        };
-
-        function getPosValue(type, x, z, color) {
-            const table = POS_TABLES[type];
-            if (!table) return 0;
-            // Mirror for black (they start at z=7)
-            const row = color === 'white' ? (7 - z) : z;
-            return table[row]?.[x] || 0;
-        }
-
-        function evaluateBoard() {
-            let score = 0;
-            const posWeight = Math.min(1, aiLevel / 6);  // Position matters more at higher levels
-            for (const p of pieces) {
-                const sign = p.color === 'black' ? 1 : -1;  // AI is black, positive = good for AI
-                const materialVal = PIECE_VALUES[p.type] || 0;
-                const posVal = getPosValue(p.type, p.x, p.z, p.color) * posWeight;
-                score += sign * (materialVal + posVal);
-            }
-            // Add noise for lower levels (makes AI make "mistakes")
-            if (aiLevel <= 4) {
-                const noise = (11 - aiLevel) * 15;  // level 1 = ±150, level 4 = ±105
-                score += (Math.random() - 0.5) * noise;
-            }
-            return score;
-        }
-
-        function getAIDepth() {
-            if (aiLevel <= 2) return 1;
-            if (aiLevel <= 4) return 2;
-            if (aiLevel <= 7) return 3;
-            return 4;
-        }
-
-        function minimax(depth, alpha, beta, isMaximizing) {
-            if (depth === 0) return evaluateBoard();
-
-            const color = isMaximizing ? 'black' : 'white';
-            const myPieces = pieces.filter(p => p.color === color);
-            let bestEval = isMaximizing ? -Infinity : Infinity;
-
-            for (const p of myPieces) {
-                const moves = getLegalMoves(p);
-                for (const move of moves) {
-                    // Save state
-                    const origX = p.x, origZ = p.z, origType = p.type;
-                    const captured = pieceAt(move.x, move.z);
-
-                    // Apply move
-                    p.x = move.x;
-                    p.z = move.z;
-                    if (captured) {
-                        const idx = pieces.indexOf(captured);
-                        if (idx !== -1) pieces.splice(idx, 1);
-                    }
-
-                    // Simulate pawn promotion (auto-queen in simulation)
-                    if (p.type === 'pawn') {
-                        if ((p.color === 'white' && p.z === 7) || (p.color === 'black' && p.z === 0)) {
-                            p.type = 'queen';
-                        }
-                    }
-
-                    const evalScore = minimax(depth - 1, alpha, beta, !isMaximizing);
-
-                    // Undo move (including type revert)
-                    p.x = origX;
-                    p.z = origZ;
-                    p.type = origType;
-                    if (captured) pieces.push(captured);
-
-                    if (isMaximizing) {
-                        bestEval = Math.max(bestEval, evalScore);
-                        alpha = Math.max(alpha, evalScore);
-                    } else {
-                        bestEval = Math.min(bestEval, evalScore);
-                        beta = Math.min(beta, evalScore);
-                    }
-                    if (beta <= alpha) break;  // Alpha-beta pruning
+            switch (status.state) {
+                case 'checkmate': {
+                    const winnerText = status.winner === 'white' ? 'Blancas' : 'Negras';
+                    ti.innerText = `👑 ¡JAQUE MATE!`;
+                    ti.style.background = 'linear-gradient(135deg, #ff6600, #ff0000)';
+                    st.innerText = `🏆 ¡${winnerText} GANAN! ¡Jaque Mate!`;
+                    break;
                 }
+                case 'stalemate':
+                    ti.innerText = `🤝 TABLAS`;
+                    ti.style.background = 'linear-gradient(135deg, #888888, #555555)';
+                    st.innerText = `🤝 ¡Tablas por ahogado! No hay movimientos legales.`;
+                    break;
+                case 'fifty_moves':
+                    ti.innerText = `🤝 TABLAS`;
+                    ti.style.background = 'linear-gradient(135deg, #888888, #555555)';
+                    st.innerText = `🤝 Tablas: regla de los 50 movimientos.`;
+                    break;
+                case 'threefold':
+                    ti.innerText = `🤝 TABLAS`;
+                    ti.style.background = 'linear-gradient(135deg, #888888, #555555)';
+                    st.innerText = `🤝 Tablas: triple repetición de la posición.`;
+                    break;
+                case 'insufficient_material':
+                    ti.innerText = `🤝 TABLAS`;
+                    ti.style.background = 'linear-gradient(135deg, #888888, #555555)';
+                    st.innerText = `🤝 Tablas: material insuficiente para dar mate.`;
+                    break;
+                case 'check':
+                    ti.className = engine.turn;
+                    ti.innerText = `⚠️ ¡JAQUE! Turno: ${turnName}`;
+                    ti.style.background = 'linear-gradient(135deg, #ff4444, #cc0000)';
+                    st.innerText = cap ? `💀 ¡Baja! ⚠️ ¡${turnName} en JAQUE!` : `⚠️ ¡${turnName} en JAQUE!`;
+                    break;
+                default:
+                    ti.className = engine.turn;
+                    ti.innerText = `⚔ Turno: ${turnName}`;
+                    ti.style.background = '';
+                    st.innerText = cap ? `💀 ¡Baja! Turno: ${turnName}` : `Turno: ${turnName}`;
             }
-            return bestEval;
         }
 
+        // ─── IA ───────────────────────────────────
+        // La búsqueda y la evaluación viven en aiWorker.js (sobre el motor
+        // único). Aquí solo se envía la posición (FEN) y se aplica la
+        // respuesta por el MISMO camino que un movimiento humano.
         let aiWorker = null;
+        let aiRequestGeneration = 0; // invalida respuestas tardías tras un reinicio
 
         function makeAIMove() {
-            const depth = getAIDepth();
-            console.log(`🤖 AI starts thinking with depth ${depth} (Level: ${aiLevel})`);
+            if (gameOver) return;
+            aiThinking = true;
+            animating = true;
+            document.getElementById('status').innerText = '🤖 La IA está pensando...';
+            const myGen = ++aiRequestGeneration;
 
-            // Serialize pieces to send to Worker
-            const cleanPieces = pieces.map(p => ({
-                type: p.type,
-                color: p.color,
-                x: p.x,
-                z: p.z
-            }));
-
-            // Initialize worker if it doesn't exist
-            if (!aiWorker) {
-                aiWorker = new Worker('aiWorker.js');
-                aiWorker.onmessage = function(e) {
-                    const { bestMove, bestPiece, bestEval } = e.data;
-                    
-                    aiThinking = false; // Reset thinking flag
-
-                    if (bestPiece && bestMove) {
-                        // Find the corresponding piece in the main thread's pieces array
-                        const realPiece = pieces.find(p => p.color === 'black' && p.x === bestPiece.x && p.z === bestPiece.z);
-                        if (realPiece) {
-                            console.log(`🤖 AI moves ${realPiece.type} to (${bestMove.x}, ${bestMove.z}) (Eval: ${bestEval})`);
-                            doMove(realPiece, bestMove.x, bestMove.z);
-                        } else {
-                            console.error('🤖 AI chose an invalid piece.');
-                            animating = false;
-                        }
-                    } else {
-                        console.log('🤖 AI could not find a valid move.');
-                        animating = false;  // No valid moves
-                    }
-                };
-            }
-
-            // Post message to worker
-            aiWorker.postMessage({
-                pieces: cleanPieces,
-                depth: depth,
-                aiLevel: aiLevel
-            });
+            if (!aiWorker) aiWorker = new Worker('aiWorker.js?v=2');
+            // Handler por petición: si la partida se reinició mientras
+            // la IA pensaba, su respuesta tardía se descarta.
+            aiWorker.onmessage = function (e) {
+                if (myGen !== aiRequestGeneration) return;
+                aiThinking = false;
+                const mv = e.data.move;
+                if (mv) {
+                    console.log(`🤖 IA mueve ${mv.fromX},${mv.fromZ} → ${mv.toX},${mv.toZ}${mv.promotion ? ' (corona ' + mv.promotion + ')' : ''} (eval: ${e.data.eval})`);
+                    commitMove(mv, true);
+                } else {
+                    // Sin movimientos legales: el motor ya lo habrá marcado como mate/tablas
+                    console.log('🤖 IA sin movimientos legales.');
+                    animating = false;
+                }
+            };
+            aiWorker.postMessage({ fen: engine.fen(), level: aiLevel });
         }
 
         // ─── COMBAT IMAGE SPRITES (BANG / POW) ────
@@ -2686,9 +3580,10 @@
                     if (p.prog >= 1) {
                         p.prog = 1; p.mesh.position.copy(p.targetPos);
                         if (p.targetEnemy) { p.isMoving = false; p.isFighting = true; p.fightTimer = 50; p.combatCenter = p.targetPos.clone(); p.enemyOrigPos = p.targetEnemy.mesh.position.clone(); p.targetEnemy.mesh.lookAt(p.mesh.position); }
-                        else { 
-                            p.isMoving = false; 
-                            if (!checkPromotion(p, () => endTurn())) endTurn(); 
+                        else {
+                            p.isMoving = false;
+                            // La torre del enroque también anima pero no cierra turno
+                            if (p.moveRecord) finishMovePiece(p);
                         }
                     } else {
                         p.mesh.position.x = THREE.MathUtils.lerp(p.startPos.x, p.targetPos.x, p.prog);
@@ -2712,7 +3607,7 @@
                         if (p.targetEnemy) { explode(p.targetEnemy.mesh.position, p.targetEnemy.color); scene.remove(p.targetEnemy.mesh); const idx = pieces.indexOf(p.targetEnemy); if (idx !== -1) pieces.splice(idx, 1); }
                         p.isFighting = false; p.targetEnemy = null; p.mesh.position.copy(p.combatCenter);
                         p.mesh.rotation.y = p.baseRotY !== undefined ? p.baseRotY : (p.color === 'black' ? Math.PI : 0);
-                        if (!checkPromotion(p, () => endTurn(true))) endTurn(true);
+                        if (p.moveRecord) finishMovePiece(p);
                     }
                 }
             });
@@ -2748,6 +3643,10 @@
                 }
             }
 
+            if (valderonBirds) valderonBirds.update(clock.getElapsedTime());
+            if (veloGelidoSystem) veloGelidoSystem.update(clock.getElapsedTime());
+            if (vacioSystem) vacioSystem.update(clock.getElapsedTime());
+            if (cumbresLavaSystem) cumbresLavaSystem.update(clock.getElapsedTime());
             composer.render();
         }
 
@@ -2780,49 +3679,24 @@
         }
 
         // ─── PROMOTION ─────────────────────────────
-        let pendingPromotion = null;
+        // La elección de pieza se hace ANTES de confirmar el movimiento
+        // (attemptMove → modal → commitMove con `promotion`). Así la
+        // elección viaja al servidor y el rival ve la pieza correcta.
+        let pendingPromotion = null; // { fromX, fromZ, toX, toZ }
 
-        function checkPromotion(p, callback) {
-            const isWhitePromo = p.color === 'white' && p.z === 7;
-            const isBlackPromo = p.color === 'black' && p.z === 0;
-            
-            if (p.type === 'pawn' && (isWhitePromo || isBlackPromo)) {
-                console.log(`👑 Promotion detected! ${p.color} pawn at (${p.x}, ${p.z})`);
-                if (gameMode === 'ai' && p.color === 'black') {
-                    // AI auto-promotes to queen
-                    console.log('🤖 AI auto-promotes to queen');
-                    promotePiece(p, 'queen');
-                    callback();
-                } else if (gameMode === 'multiplayer' && p.color !== multiplayerColor) {
-                    console.log('🌐 Remote player auto-promotes to queen');
-                    promotePiece(p, 'queen');
-                    callback();
-                } else {
-                    // Show promotion modal for the human player
-                    console.log('🎯 Showing promotion modal for human player');
-                    pendingPromotion = { piece: p, cb: callback };
-                    const modal = document.getElementById('promotion-modal');
-                    modal.classList.remove('hidden');
-                    modal.style.display = 'flex';  // Force display in case CSS class toggle fails
-                }
-                return true;
-            }
-            return false;
-        }
-
-        window.confirmPromotion = function(type) {
-            console.log(`👑 Player chose promotion: ${type}`);
+        window.confirmPromotion = function (type) {
+            console.log(`👑 Promoción elegida: ${type}`);
             const modal = document.getElementById('promotion-modal');
             modal.classList.add('hidden');
             modal.style.display = '';  // Reset inline style so CSS class takes control
             if (pendingPromotion) {
-                promotePiece(pendingPromotion.piece, type);
-                const cb = pendingPromotion.cb;
+                const m = pendingPromotion;
                 pendingPromotion = null;
-                cb();
+                commitMove({ fromX: m.fromX, fromZ: m.fromZ, toX: m.toX, toZ: m.toZ, promotion: type });
             }
         };
 
+        // Cambio de mesh al coronar: solo apariencia — el motor ya cambió el tipo.
         function promotePiece(p, newType) {
             scene.remove(p.mesh);
             p.type = newType;
@@ -2830,7 +3704,11 @@
             // Determine skinId using same logic as addPiece
             let skinId;
 
-            if (p.color === 'white') {
+            if (gameMode === 'multiplayer') {
+                skinId = (p.color === multiplayerColor)
+                    ? (urlArmySkin || 'orcos')
+                    : (urlOpponentSkin || 'orcos');
+            } else if (p.color === 'white') {
                 skinId = urlArmySkin || 'orcos';
             } else {
                 const enemySkin = ENEMY_SKIN_MAP[urlColiseumId];
@@ -2871,22 +3749,41 @@
             scene.add(mesh);
         }
 
+        // Token de desbloqueo: dificulta falsificar la recompensa editando la URL.
+        // MANTENER EN SINCRONÍA con verifyUnlockToken() en mundo-frontend/src/App.jsx.
+        // Nota honesta: al vivir en código de cliente es disuasión, no seguridad
+        // absoluta — la validación real exigiría un servidor con secreto privado.
+        function makeUnlockToken(skin, ts) {
+            const raw = `wocc-unlock-v1|${skin}|${ts}|K9x!vR2#qPzL`;
+            let h = 5381;
+            for (let i = 0; i < raw.length; i++) {
+                h = (((h << 5) + h) ^ raw.charCodeAt(i)) >>> 0;
+            }
+            return `${ts}.${h.toString(36)}`;
+        }
+
         function returnToWorld() {
+            // If in a live PvP match, tell the server before navigating away
+            if (gameMode === 'multiplayer' && typeof window.notifyPlayerLeft === 'function') {
+                window.notifyPlayerLeft();
+            }
             const params = new URLSearchParams(window.location.search);
             const rX = params.get('returnX');
             const rY = params.get('returnY');
             const rZ = params.get('returnZ');
-            
+
             const hostname = window.location.hostname;
             const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
             let url = isLocal ? 'http://localhost:3003' : 'https://chess-coliseum-pro.web.app';
-            
+
             const qs = [];
             if (rX !== null && rY !== null && rZ !== null) {
                 qs.push(`x=${rX}&y=${rY}&z=${rZ}`);
             }
             if (window.pendingRewardSkin) {
-                qs.push(`unlockSkin=${window.pendingRewardSkin}`);
+                const ts = Date.now();
+                qs.push(`unlockSkin=${encodeURIComponent(window.pendingRewardSkin)}`);
+                qs.push(`unlockToken=${encodeURIComponent(makeUnlockToken(window.pendingRewardSkin, ts))}`);
             }
             
             if (qs.length > 0) {
@@ -2895,37 +3792,47 @@
             window.location.href = url;
         }
 
-        function resetGameToMenu() {
-            // Eliminar todas las piezas físicamente del escenario
+        function clearVisuals() {
+            pieceLoadGeneration++;
             pieces.forEach(p => scene.remove(p.mesh));
             pieces = [];
-
-            // Limpiar indicadores y efectos
             hlMeshes.forEach(m => scene.remove(m));
             hlMeshes = [];
             validMoves = [];
-
             particles.forEach(p => scene.remove(p.mesh));
             particles = [];
             combatImages.forEach(img => scene.remove(img.sprite));
             combatImages = [];
             document.getElementById('capture-log').innerHTML = '';
-
-            // Limpiar estado
-            if (typeof window.clearHL === 'function') window.clearHL();
-            turn = 'white';
-            animating = false;
             selectedPiece = null;
-            // No resetear gameMode, mantenemos el actual (ej. ai)
+        }
+
+        // Reconstruye los actores 3D a partir del estado REAL del motor
+        // (se usa al resincronizar con el servidor).
+        function rebuildVisualsFromEngine() {
+            clearVisuals();
+            engine.getPieces().forEach(ep => addPiece(ep.type, ep.color, ep.x, ep.z));
+        }
+
+        function resetGameToMenu() {
+            // En multiplayer no hay "reiniciar": abandonar es volver al mundo
+            if (gameMode === 'multiplayer') { returnToWorld(); return; }
+
+            engine.reset();
+            gameOver = false;
+            remoteMoveQueue = [];
+            animating = false;
             aiThinking = false;
+            aiRequestGeneration++; // descarta respuestas tardías del worker
             multiplayerColor = null;
+            clearVisuals();
 
             // Restablecer interfaz
             document.getElementById('turn-indicator').innerText = '⚔ Turno: Blancas';
             document.getElementById('turn-indicator').className = 'white';
             document.getElementById('turn-indicator').style.background = '';
             document.getElementById('status').innerText = 'Partida reiniciada.';
-            
+
             // Volver a configurar las fichas
             setupPieces();
         }
@@ -2934,22 +3841,56 @@
         window.startMultiplayerGame = function (color, roomId, opponentName) {
             gameMode = 'multiplayer';
             multiplayerColor = color;
+            engine.reset();
+            gameOver = false;
+            remoteMoveQueue = [];
+            animating = false;
+            aiThinking = false;
+            aiRequestGeneration++;
             document.getElementById('game-modal').classList.add('hidden');
-            const turnName = color === 'white' ? 'Blancas (Tú)' : 'Negras (Esperando...)';
-            document.getElementById('turn-indicator').innerText = `⚔ Turno: ${turn === color ? 'TU TURNO' : opponentName}`;
+            document.getElementById('turn-indicator').innerText = `⚔ Turno: ${engine.turn === color ? 'TU TURNO' : opponentName}`;
             document.getElementById('status').innerText = `⚔ Online vs ${opponentName} | Juegas ${color === 'white' ? 'Blancas' : 'Negras'}`;
-            document.getElementById('reset-btn').style.display = 'inline-block';
-            console.log(`🎮 Multiplayer mode: You are ${color}`);
+            // En multiplayer "reiniciar" no aplica: solo volver al mundo
+            document.getElementById('reset-btn').style.display = 'none';
+            document.getElementById('return-world-btn').style.display = 'inline-block';
+            clearVisuals();
+            setupPieces();
+            console.log(`🎮 Multiplayer: ${color} | armySkin=${urlArmySkin} opponentSkin=${urlOpponentSkin}`);
         };
 
+        // Movimiento del rival, ya validado por el servidor. Si llega en
+        // mitad de una animación, se encola y se aplica al terminar.
         window.receiveOpponentMove = function (move) {
-            // Find the piece at the source position
-            const piece = pieces.find(p => p.x === move.fromX && p.z === move.fromZ && p.type === move.type && p.color === move.color);
-            if (piece) {
-                doMove(piece, move.toX, move.toZ, true);
-            } else {
-                console.warn('Could not find piece for opponent move:', move);
+            const m = {
+                fromX: move.fromX, fromZ: move.fromZ,
+                toX: move.toX, toZ: move.toZ,
+                promotion: move.promotion || null
+            };
+            if (animating || aiThinking) {
+                remoteMoveQueue.push(m);
+                return;
             }
+            commitMove(m, true);
+        };
+
+        // Resincronización completa desde el servidor (reconexión o
+        // movimiento rechazado): reconstruye motor y visuales.
+        window.applyServerSync = function (data) {
+            console.log('🔄 Resincronizando partida desde el servidor', data);
+            engine.reset();
+            remoteMoveQueue = [];
+            (data.moves || []).forEach(mv => {
+                engine.makeMove({
+                    fromX: mv.fromX, fromZ: mv.fromZ,
+                    toX: mv.toX, toZ: mv.toZ,
+                    promotion: mv.promotion || null
+                });
+            });
+            rebuildVisualsFromEngine();
+            const status = engine.getStatus();
+            gameOver = status.over;
+            animating = status.over;
+            updateStatusUI(null);
         };
 
         // Expose modal functions to global scope (needed for HTML onclick in ES6 module)
@@ -2964,8 +3905,8 @@
         window.selectArmy = function(skinName) {
             console.log(`🎨 selectArmy called with: ${skinName}`);
             urlArmySkin = skinName;
-            // If pieces are already on the board, reload them with the new skin
             if (pieces.length > 0) {
+                pieceLoadGeneration++;
                 pieces.forEach(p => scene.remove(p.mesh));
                 pieces = [];
                 setupPieces();
@@ -2982,7 +3923,7 @@
     <!-- Socket.io Client -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <!-- Multiplayer & Social System -->
-    <script src="multiplayer.js?v=4"></script>
+    <script src="multiplayer.js?v=5"></script>
 </body>
 
 </html>
