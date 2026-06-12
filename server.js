@@ -425,24 +425,30 @@ io.on('connection', (socket) => {
         if (roomId) {
             const room = gameRooms.get(roomId);
             if (room && room.state === 'playing') {
+                // ¿Este socket es el ACTUAL de algún jugador? Al reconectar,
+                // socket.io crea un id nuevo y el viejo muere después: ese
+                // fantasma NO debe disparar la alarma de abandono.
                 let color = null;
                 if (room.sockets) {
                     if (room.sockets.white === socket.id) color = 'white';
                     else if (room.sockets.black === socket.id) color = 'black';
                 }
-                const key = color || socket.id;
-                socket.to(roomId).emit('opponent_connection_lost', { roomId });
-                room.pendingDc = room.pendingDc || {};
-                if (room.pendingDc[key]) clearTimeout(room.pendingDc[key]);
-                room.pendingDc[key] = setTimeout(() => {
-                    if (room.state === 'playing') {
-                        room.state = 'finished';
-                        io.to(roomId).emit('opponent_disconnected', { roomId });
-                        console.log(`⚡ ${key} no volvió a ${roomId} — partida abandonada`);
-                        setTimeout(() => gameRooms.delete(roomId), 10000);
-                    }
-                }, RECONNECT_GRACE_MS);
-                console.log(`⏳ ${key} se desconectó de ${roomId} — esperando reconexión (${RECONNECT_GRACE_MS / 1000}s)...`);
+                if (color) {
+                    socket.to(roomId).emit('opponent_connection_lost', { roomId });
+                    room.pendingDc = room.pendingDc || {};
+                    if (room.pendingDc[color]) clearTimeout(room.pendingDc[color]);
+                    room.pendingDc[color] = setTimeout(() => {
+                        if (room.state === 'playing') {
+                            room.state = 'finished';
+                            io.to(roomId).emit('opponent_disconnected', { roomId });
+                            console.log(`⚡ ${color} no volvió a ${roomId} — partida abandonada`);
+                            setTimeout(() => gameRooms.delete(roomId), 10000);
+                        }
+                    }, RECONNECT_GRACE_MS);
+                    console.log(`⏳ ${color} se desconectó de ${roomId} — esperando reconexión (${RECONNECT_GRACE_MS / 1000}s)...`);
+                } else {
+                    console.log(`👻 Socket fantasma ${socket.id} murió en ${roomId} (ya reemplazado) — ignorado`);
+                }
             }
             socketRooms.delete(socket.id);
         }
