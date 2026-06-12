@@ -482,17 +482,32 @@ const RESULT_NAMES = {
     fifty_moves: 'regla de 50 movimientos',
     threefold: 'triple repetición',
     insufficient_material: 'material insuficiente',
-    resignation: 'rendición'
+    resignation: 'rendición',
+    closed: 'la sala se cerró'
 };
 
 socket.on('gameEnded', data => {
     const reason = RESULT_NAMES[data.result] || data.result;
     if (data.winner === 'draw') {
         alert(`🤝 Tablas: ${reason}.`);
-    } else {
+    } else if (data.winner === 'white' || data.winner === 'black') {
         alert(`🏆 ¡${data.winner === 'white' ? 'Blancas' : 'Negras'} ganan! (${reason})`);
+    } else {
+        alert(`⚔ Partida terminada: ${reason}.`);
     }
     multiplayerRoomId = null;
+});
+
+// ── Conexión inestable del rival (pantalla del móvil apagada, red…) ──
+// El servidor le da 60s de gracia antes de declarar abandono.
+socket.on('opponent_connection_lost', () => {
+    const statusEl = document.getElementById('status');
+    if (statusEl) statusEl.innerText = '📶 Tu oponente perdió la conexión — esperando a que vuelva...';
+});
+
+socket.on('opponent_reconnected', () => {
+    const statusEl = document.getElementById('status');
+    if (statusEl) statusEl.innerText = '✅ ¡Tu oponente volvió! La batalla continúa.';
 });
 
 socket.on('opponent_disconnected', () => {

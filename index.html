@@ -3913,6 +3913,22 @@
             }
         };
 
+        // ─── WAKE LOCK: que el móvil no apague la pantalla en plena batalla ───
+        // (Si la pantalla se apaga, el socket se cae y el rival cree que abandonaste.)
+        let screenWakeLock = null;
+        async function requestWakeLock() {
+            try {
+                if ('wakeLock' in navigator) {
+                    screenWakeLock = await navigator.wakeLock.request('screen');
+                }
+            } catch (e) { /* no soportado o sin permiso: no pasa nada */ }
+        }
+        document.addEventListener('visibilitychange', () => {
+            // Al volver a la pestaña, el wake lock se pierde — re-pedirlo
+            if (document.visibilityState === 'visible') requestWakeLock();
+        });
+        requestWakeLock();
+
         init();
     </script>
 
@@ -3923,7 +3939,7 @@
     <!-- Socket.io Client -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <!-- Multiplayer & Social System -->
-    <script src="multiplayer.js?v=5"></script>
+    <script src="multiplayer.js?v=6"></script>
 </body>
 
 </html>

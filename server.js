@@ -17,8 +17,16 @@ const io = new Server(server, {
     cors: {
         origin: '*',
         methods: ['GET', 'POST']
-    }
+    },
+    // Móviles que atenúan la pantalla o redes que parpadean: no declarar
+    // muerto un socket a la primera (por defecto eran solo 20s).
+    pingInterval: 25000,
+    pingTimeout: 60000
 });
+
+// Tiempo que se espera a un jugador desconectado antes de dar la
+// partida por abandonada (la reconexión re-sincroniza con gameStateSync).
+const RECONNECT_GRACE_MS = 60000;
 
 app.use(cors());
 app.use(express.json());
@@ -219,7 +227,16 @@ io.on('connection', (socket) => {
 
         if (room.state === 'playing') {
             // Reconnect to active game — re-autorizar este socket y resincronizar
-            if (color === 'white' || color === 'black') room.sockets[color] = socket.id;
+            if (color === 'white' || color === 'black') {
+                room.sockets[color] = socket.id;
+                // Volvió a tiempo: cancelar el temporizador de abandono
+                if (room.pendingDc && room.pendingDc[color]) {
+                    clearTimeout(room.pendingDc[color]);
+                    delete room.pendingDc[color];
+                    socket.to(roomId).emit('opponent_reconnected', { roomId });
+                    console.log(`🔄 ${color} volvió a tiempo a ${roomId}`);
+                }
+            }
             socket.emit('gameStart', {
                 roomId,
                 white: room.white,
@@ -233,6 +250,12 @@ io.on('connection', (socket) => {
                 fen: room.game.fen()
             });
             console.log(`🔌 Player ${uid} rejoined room ${roomId}`);
+            return;
+        }
+
+        if (room.state === 'finished') {
+            // La sala ya terminó: no resucitarla con un re-join tardío
+            socket.emit('gameEnded', { result: 'closed', winner: null });
             return;
         }
 
@@ -395,15 +418,31 @@ io.on('connection', (socket) => {
             broadcastOnlineUsers();
         }
 
-        // Notify opponent if this socket was in an active game room
+        // Desconexión durante una partida activa: NO es abandono inmediato.
+        // La pantalla del móvil se apaga, la red parpadea… damos un período
+        // de gracia para reconectar (el cliente re-entra solo a la sala).
         const roomId = socketRooms.get(socket.id);
         if (roomId) {
             const room = gameRooms.get(roomId);
             if (room && room.state === 'playing') {
-                room.state = 'finished';
-                socket.to(roomId).emit('opponent_disconnected', { roomId });
-                console.log(`⚡ Player disconnected from room ${roomId} — opponent notified`);
-                setTimeout(() => gameRooms.delete(roomId), 10000);
+                let color = null;
+                if (room.sockets) {
+                    if (room.sockets.white === socket.id) color = 'white';
+                    else if (room.sockets.black === socket.id) color = 'black';
+                }
+                const key = color || socket.id;
+                socket.to(roomId).emit('opponent_connection_lost', { roomId });
+                room.pendingDc = room.pendingDc || {};
+                if (room.pendingDc[key]) clearTimeout(room.pendingDc[key]);
+                room.pendingDc[key] = setTimeout(() => {
+                    if (room.state === 'playing') {
+                        room.state = 'finished';
+                        io.to(roomId).emit('opponent_disconnected', { roomId });
+                        console.log(`⚡ ${key} no volvió a ${roomId} — partida abandonada`);
+                        setTimeout(() => gameRooms.delete(roomId), 10000);
+                    }
+                }, RECONNECT_GRACE_MS);
+                console.log(`⏳ ${key} se desconectó de ${roomId} — esperando reconexión (${RECONNECT_GRACE_MS / 1000}s)...`);
             }
             socketRooms.delete(socket.id);
         }
