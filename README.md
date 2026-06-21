@@ -2,6 +2,8 @@
 
 Batalla de ajedrez 3D (Three.js) con IA, PvP local y PvP online (Socket.io + Firebase).
 
+> 📱 **Trabajo en curso:** optimización de rendimiento para iPhone/móviles — ver [OPTIMIZACION_MOVIL.md](OPTIMIZACION_MOVIL.md) (diagnóstico, plan y cómo volver atrás).
+
 ## Arquitectura
 
 ```
