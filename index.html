@@ -1110,11 +1110,12 @@
         zoom</div>
     <div id="capture-log"></div>
 
-    <!-- Ocultar modal inmediatamente si venimos de una invitación PvP (matchId en URL) -->
+    <!-- Ocultar modal inmediatamente si venimos de una invitación PvP (matchId)
+         o de un coliseo del mundo (coliseumId) — evita el parpadeo del modal. -->
     <script>
         (function() {
             var p = new URLSearchParams(window.location.search);
-            if (p.get('matchId') || p.get('roomId')) {
+            if (p.get('matchId') || p.get('roomId') || p.get('coliseumId')) {
                 document.write('<style>#game-modal{display:none!important}</style>');
             }
         })();

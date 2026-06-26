@@ -16,6 +16,19 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Anti-trampa del oro (protección provisional vía reglas; lo robusto será una
+    // Cloud Function antes de abrir al público). Reglas:
+    //  1) el oro nunca puede ser negativo
+    //  2) el oro nunca puede pasar de 100.000
+    //  3) un solo cambio no puede SUMAR más que el premio máximo legítimo (PvP 1500 + margen)
+    //  Si el oro no cambia (presencia, apodo, skins…), siempre se permite.
+    function goldOk() {
+      let oldGold = resource == null ? 0 : resource.data.get('gold', 0);
+      let newGold = request.resource.data.get('gold', 0);
+      return newGold == oldGold
+        || (newGold >= 0 && newGold <= 100000 && newGold <= oldGold + 2000);
+    }
+
     // ── Usuarios: perfil, amigos, skins, presencia ──────────
     match /users/{uid} {
       // Lectura: cualquier usuario autenticado (búsqueda por email,
@@ -23,10 +36,10 @@ service cloud.firestore {
       allow read: if signedIn();
 
       // Crear: solo tu propio documento (registro).
-      allow create: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid && goldOk();
 
-      // Actualizar tu propio documento: libre (skins, presencia, perfil).
-      allow update: if signedIn() && request.auth.uid == uid;
+      // Actualizar tu propio documento: skins, presencia, perfil… con el oro acotado.
+      allow update: if signedIn() && request.auth.uid == uid && goldOk();
 
       // Actualizar el documento de OTRO usuario: únicamente para
       // añadirte a ti mismo a su lista 'friends' (aceptar solicitud).
